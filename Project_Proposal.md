@@ -1,5 +1,5 @@
 # A Cloud-Native Event Booking Platform with Automatic Waitlisting 
-ECE1779 Course Project
+ECE1779 Course Project - Team 19
 
 ## 1\. Motivation
 
