@@ -1,178 +1,176 @@
-# 产品需求文档：支持自动候补的云原生活动预约平台
+# Product Requirements Document: A Cloud-Native Event Booking Platform with Automatic Waitlisting
 
-版本：1.0 ｜ 日期：2026-11-09 ｜ 范围：课程项目首个完整版本
+Version: 1.0 | Date: 2026-11-09 | Scope: First complete release of the course project
 
-本文依据 [Project_Proposal.md](Project_Proposal.md) 第 1、2、4 节及[系统架构图](planned-system-architecture.svg)编写，不采用第 3 节的排期、人员分工和集成计划。提案确定产品方向与技术约束；本文补充业务规则、默认参数和验收标准。当前仓库仅有提案与架构图，以下内容是待实现、待验证的产品要求，不代表已有功能或实测结果。
+This document is based on Sections 1, 2, and 4 of [Project_Proposal.md](Project_Proposal.md) and the [system architecture diagram](planned-system-architecture.svg). It does not adopt the schedule, team assignments, or integration plan in Section 3. The proposal establishes the product direction and technical constraints; this document adds business rules, default parameters, and acceptance criteria. The repository currently contains only the proposal and architecture diagram. The requirements below remain to be implemented and verified; they do not represent existing functionality or measured results.
 
-## 1. 产品定位与要解决的问题
+## 1. Product Positioning and Problem
 
-本项目面向大学工作坊、课程活动和会议分场等名额有限的报名场景。报名开放时，多名参与者可能同时争抢最后一个名额；报名之后，取消和未及时确认又会释放名额。人工维护候补名单既难以保证顺序，也容易让空位长期闲置。参与者如果看不到可靠的预约状态，还需要反复询问组织者，增加双方的沟通成本。
+This project addresses registration scenarios with limited capacity, such as university workshops, course activities, and conference sessions. When registration opens, multiple attendees may compete for the last available seat. Later, cancellations and unconfirmed reservations release seats. Manually maintaining a waitlist makes ordering difficult to guarantee and can leave seats unused for extended periods. Without reliable booking status, attendees must repeatedly contact organizers, increasing the communication burden for both sides.
 
-平台应把“浏览活动—预约占座—确认报名—取消或过期—自动候补递补”连成一个完整流程。参与者能够知道自己是否已获得名额、需要何时确认、候补时前面还有多少人；组织者能够设置容量、查看报名情况，而不必逐个联系候补者。管理员负责必要的用户和活动管理。
+The platform should connect “browse events—reserve a temporary seat—confirm registration—cancel or expire—automatically promote from the waitlist” into a complete workflow. Attendees should know whether they have a seat, when they must confirm it, and how many people are ahead of them on the waitlist. Organizers should be able to configure capacity and review registrations without contacting waitlisted attendees individually. Administrators handle necessary user and event management.
 
-项目重点是后端在并发请求、异步任务、多副本部署及服务重启下保持正确性。轻量前端用于完成真实操作和展示状态，不追求复杂视觉设计。现阶段先把规则和验收口径固定下来，使后续 API、后台任务、实时通知和云部署围绕同一套业务语义实现。
+The project focuses on backend correctness under concurrent requests, asynchronous tasks, multiple application replicas, and service restarts. A lightweight frontend supports actual operations and displays status, without pursuing elaborate visual design. At this stage, rules and acceptance criteria are established so that APIs, background tasks, real-time notifications, and cloud deployment share the same business semantics.
 
-## 2. 产品目标与成功标准
+## 2. Product Goals and Success Criteria
 
-首要目标是不超售、不重复占座，并按确定的先来先服务规则分配释放的名额。其次是让过期回收、候补通知和故障恢复自动运行，减少人工干预。云原生能力的价值应通过可复现的部署、并发与恢复实验体现，而不是仅以使用了某项技术作为成功标准。
+The primary goals are to prevent overbooking and duplicate seat allocation, and to assign released seats according to a defined first-come, first-served rule. Secondary goals are to automate expiration handling, waitlist offers, and recovery, reducing manual intervention. The value of cloud-native capabilities should be demonstrated through reproducible deployment, concurrency, and recovery experiments rather than treating the use of a particular technology as a success criterion.
 
-目前没有可用运行数据，所有指标的基线均为“待首次测试建立”。下表中的数值是本版本拟定的验收目标，不是生产 SLA，也不是现有性能承诺。
+No operational data is currently available. The baseline for every metric is “to be established in the first test.” The values below are proposed acceptance targets for this release, not production SLAs or commitments about existing performance.
 
-| 指标 | 验收目标与测量方式 | 验收阶段 |
+| Metric | Acceptance Target and Measurement | Acceptance Stage |
 | --- | --- | --- |
-| 容量与重复预约 | 对容量为 20 的场次，以 100 个并发客户端提交合计 1,000 次预约请求，并覆盖重复提交、取消、确认和过期竞争；运行 10 轮，容量违规和同用户重复有效预约均为 0。请求使用多个测试账号，单独统计限流拒绝，避免用限流掩盖并发缺陷。 | 核心流程完成后，云端再次验证 |
-| 候补公平性 | 在固定入队顺序的测试中覆盖单空位、多空位、多 worker、队首退出和通知过期；每次分配均选择当时最早且符合条件的候补者，无插队、重复通知占座或遗漏空位。 | 候补流程验收 |
-| 回收与递补延迟 | 在系统健康、报名开放且存在有效候补者时，从占座截止时间或取消提交成功起，到候补通知持久化，P95 ≤ 5 秒；每类至少记录 100 次，附最大值和测试负载。 | 集成及云端验收 |
-| 状态可见性 | WebSocket 正常连接时，从事务提交到页面展示新状态，P95 ≤ 2 秒；断线重连后 5 秒内完成权威状态同步。通过客户端与服务端时间记录至少 100 次状态变化。 | 前后端联调 |
-| API 基础性能 | 固定云端资源与副本数，预热后按总计 50 请求/秒、读写约 7:3 持续测试 5 分钟；普通查询与业务写入的 P95 分别 ≤ 1 秒，非预期 5xx < 1%。正常业务拒绝单独统计，目标负载下不应持续触发 429。 | 云端性能验收 |
-| 持久化与恢复 | 分别重启 API、worker、WebSocket 网关及数据库 Pod 后，已提交预约、候补顺序和原截止时间完整保留；依赖恢复健康后 30 秒内补处理测试积压，不重复分配名额。 | 故障恢复验收 |
-| 扩缩容正确性 | 在有资源余量的环境中触发 API、WebSocket 网关的 HPA 扩容与回缩，记录副本数、延迟、吞吐和数据库连接数；全过程容量规则成立，断线客户端可恢复状态。 | 最终验收 |
+| Capacity and duplicate bookings | For a session with capacity 20, use 100 concurrent clients to submit a total of 1,000 booking requests, covering duplicate submissions, cancellations, confirmations, and expiration races. Run 10 rounds, with zero capacity violations and zero duplicate active bookings for the same user. Use multiple test accounts and count rate-limit rejections separately so that rate limiting does not conceal concurrency defects. | After the core workflow is complete, then verify again in the cloud |
+| Waitlist fairness | With a fixed enqueue order, cover one available seat, multiple seats, multiple workers, withdrawal by the first person in line, and offer expiration. Every allocation selects the earliest eligible attendee at that moment, with no queue jumping, duplicate seat-holding offers, or unallocated available seats. | Waitlist workflow acceptance |
+| Reclamation and promotion latency | While the system is healthy, registration is open, and eligible waitlisted attendees exist, P95 ≤ 5 seconds from the hold deadline or successful cancellation commit to persistence of a waitlist offer. Record at least 100 observations for each category, including maximum latency and test load. | Integration and cloud acceptance |
+| Status visibility | With a healthy WebSocket connection, P95 ≤ 2 seconds from transaction commit to display of the new state. Synchronize authoritative state within 5 seconds of reconnection. Record at least 100 state changes using client and server timestamps. | Frontend/backend integration |
+| Basic API performance | With fixed cloud resources and replica counts, warm up the system, then test for 5 minutes at a total of 50 requests/second with an approximately 7:3 read/write ratio. P95 ≤ 1 second for both ordinary queries and business writes; unexpected 5xx responses < 1%. Count expected business rejections separately; the target load should not continuously trigger 429 responses. | Cloud performance acceptance |
+| Persistence and recovery | Restart the API, workers, WebSocket gateway, and database Pod separately. Committed bookings, waitlist ordering, and original deadlines must remain intact. Process the test backlog within 30 seconds after dependencies become healthy, without allocating seats twice. | Failure recovery acceptance |
+| Scaling correctness | In an environment with spare resources, trigger HPA scale-out and scale-in for the API and WebSocket gateway. Record replica counts, latency, throughput, and database connections. Capacity rules must hold throughout, and disconnected clients must be able to recover their state. | Final acceptance |
 
-所有性能报告必须记录机器规格、资源限制、副本数、数据规模、请求构成及测量方法。首次测试未达标时先定位原因；如需调整目标，由项目团队记录依据，不能以更改指标代替修复正确性问题。
+All performance reports must record machine specifications, resource limits, replica counts, dataset size, request mix, and measurement methods. If initial tests miss a target, investigate the cause first. Any target adjustment must have its rationale recorded by the project team; changing metrics must not substitute for fixing correctness defects.
 
-## 3. 用户场景与范围
+## 3. User Scenarios and Scope
 
-| 用户 | 需要完成的事情 | 优先级 |
+| User | What They Need to Accomplish | Priority |
 | --- | --- | --- |
-| 参与者 | 浏览活动和场次，取得临时名额，并通过模拟支付确认报名。 | P0 |
-| 参与者 | 满员后主动加入候补，看到自己的排位，收到限时通知后确认或放弃。 | P0 |
-| 参与者 | 查看自己的预约、取消报名，明确区分待确认、候补和已确认。 | P0 |
-| 组织者 | 创建和发布活动，设置场次容量与报名时间，查看自己活动的报名和候补情况。 | P0 |
-| 管理员 | 管理账号权限及异常活动，保留可追溯的管理记录。 | P0 |
-| 参与者与组织者 | 无需刷新即可看到名额和状态变化，连接异常时仍能查询正确结果。 | P1 |
-| 项目维护者 | 一致地启动、部署和观察系统，验证高峰负载与重启时的行为。 | P0 基础部署；P1 扩缩容评估 |
+| Attendee | Browse events and sessions, obtain a temporary seat, and confirm registration through simulated payment. | P0 |
+| Attendee | Explicitly join the waitlist when full, view their position, and accept or decline a time-limited offer. | P0 |
+| Attendee | Review and cancel their bookings, clearly distinguishing pending confirmation, waitlisted, and confirmed states. | P0 |
+| Organizer | Create and publish events, configure session capacity and registration times, and review registrations and waitlists for their events. | P0 |
+| Administrator | Manage account permissions and problematic events while retaining traceable management records. | P0 |
+| Attendee and organizer | See seat availability and status changes without refreshing, and still retrieve correct results when the connection is disrupted. | P1 |
+| Project maintainer | Start, deploy, and observe the system consistently, and verify behavior under peak load and restarts. | P0 for basic deployment; P1 for scaling evaluation |
 
-P0 是业务闭环成立的前提；P1 在 P0 稳定后实现，但同样属于本次完整版本的交付范围。开发可以分阶段，不能把优先级理解为默认取消实时更新或扩缩容验证。
+P0 requirements are prerequisites for a complete business workflow. P1 requirements are implemented after P0 is stable, but remain within the scope of this complete release. Development may proceed in stages; priority must not be interpreted as automatically dropping real-time updates or scaling verification.
 
-本版本提供普通注册与登录、基于角色的权限控制、活动及场次管理、单人单名额预约、临时占座、模拟支付确认、取消、自动过期、FIFO 候补、实时状态更新，以及容器化、持久化、监控和云端部署。一个活动可以有多个场次，每个场次独立计数和排队。
+This release includes standard registration and login, role-based access control, event and session management, one-seat-per-person booking, temporary holds, simulated payment confirmation, cancellation, automatic expiration, FIFO waitlisting, real-time status updates, containerization, persistence, monitoring, and cloud deployment. An event may contain multiple sessions, each with independent capacity accounting and a separate queue.
 
-本版本不做真实收款、退款、选座、票种定价、团体购票、转让、签到核销、复杂活动推荐和原生移动应用。不同场次之间不做时间冲突校验。邮件和短信通知、候补优先级、候补确认后的再次付款、多地域容灾和数据库自动故障切换留待后续版本评估，不作为当前验收条件。
+This release excludes real payments, refunds, seat selection, ticket-type pricing, group purchases, transfers, check-in or ticket validation, complex event recommendations, and native mobile applications. It does not check scheduling conflicts across sessions. Email and SMS notifications, waitlist priorities, an additional payment step after accepting a waitlist offer, multi-region disaster recovery, and automatic database failover are deferred for future evaluation and are not current acceptance conditions.
 
-Redis 预扣库存仅作为可选性能实验。当前基线由 PostgreSQL 保证库存正确性；未经对照实验，不把额外的缓存一致性复杂度引入核心预约链路。
+Redis inventory pre-deduction is an optional performance experiment only. PostgreSQL guarantees inventory correctness in the baseline implementation. Additional cache-consistency complexity must not be introduced into the core booking path without a controlled comparison.
 
-## 4. 功能与业务规则
+## 4. Functional Requirements and Business Rules
 
-### 4.1 账号、活动与访问权限
+### 4.1 Accounts, Events, and Access Control
 
-**FR-01：身份与权限。** 未登录用户可浏览已发布活动；预约、确认、取消和候补操作必须登录。公开注册仅创建参与者账号，组织者权限由管理员授予；初始管理员通过部署初始化创建，不提供公开管理员注册。组织者可管理自己创建的活动，并可作为参与者报名；管理员可管理所有活动。服务端必须同时检查角色和资源归属，不能依赖前端隐藏按钮。参与者只能访问自己的预约、候补详情和私有通知。
+**FR-01: Identity and permissions.** Unauthenticated users may browse published events. Booking, confirmation, cancellation, and waitlist operations require login. Public registration creates attendee accounts only; administrators grant organizer privileges. The initial administrator is created during deployment initialization, with no public administrator registration. Organizers may manage events they create and may also register as attendees. Administrators may manage all events. The server must check both role and resource ownership rather than relying on hidden frontend buttons. Attendees may access only their own bookings, waitlist details, and private notifications.
 
-验收时分别使用匿名用户、两个参与者、两个组织者和管理员访问同一组资源，验证允许与拒绝路径，并直接篡改资源 ID 测试越权。未认证返回 401；无权操作返回 403，涉及他人私有记录时可统一返回 404，避免暴露记录是否存在。
+Acceptance testing must access the same resources as an anonymous user, two attendees, two organizers, and an administrator, checking both allowed and denied paths and directly modifying resource IDs to test unauthorized access. Return 401 for unauthenticated requests and 403 for unauthorized operations. Requests involving another user's private records may consistently return 404 to avoid revealing whether those records exist.
 
-**FR-02：活动与场次管理。** 活动至少包含标题、简介、地点和组织者，场次包含名称、开始与结束时间、容量、报名开放时间和截止时间。容量为正整数；报名开放早于截止，截止不晚于场次开始，开始早于结束。支持草稿、发布和取消；草稿仅对所属组织者及管理员可见，发布前必须至少有一个合法场次。报名状态由服务端时间判断，不依赖定时任务是否及时执行。
+**FR-02: Event and session management.** An event must contain at least a title, description, location, and organizer. A session contains a name, start and end times, capacity, registration opening time, and registration deadline. Capacity must be a positive integer. Registration must open before its deadline; the deadline must be no later than the session start, which must precede its end. Support draft, published, and cancelled states. Drafts are visible only to their organizer and administrators; publication requires at least one valid session. Registration status is determined by server time, independently of whether scheduled tasks execute on time.
 
-发布后可修改介绍、地点和增加容量；允许缩容，但新容量不得小于当前占用名额数。有过报名或候补记录后，场次报名时间和举办时间在本版本中不再修改，避免改变已承诺的截止时间；确需改期时取消原场次并新建。增加容量后仍优先处理已有候补。已有记录的活动和场次不可物理删除。
+After publication, descriptions and locations may be edited and capacity may be increased. Capacity may also be reduced, but not below the number of currently occupied seats. Once any registration or waitlist record exists, this release no longer allows changes to the session's registration or event times, avoiding changes to previously promised deadlines. If rescheduling is necessary, cancel the original session and create a new one. Existing waitlisted attendees retain priority when capacity increases. Events and sessions with existing records must not be physically deleted.
 
-验收覆盖非法时间和容量、草稿访问、非所属组织者修改、缩容与预约并发、扩容后的候补递补。场次之间的名额和队列不得相互影响。
+Acceptance covers invalid times and capacities, draft access, changes by an organizer who does not own the event, capacity reduction concurrent with booking, and waitlist promotion after a capacity increase. Seats and queues for different sessions must not affect one another.
 
-**FR-03：浏览与查询。** 活动列表按最近的场次开始时间排序，支持关键词搜索及“可报名”筛选，默认每页 20 条。详情展示场次时间、时区、容量、当前可用名额、候补人数及报名状态。参与者可查询自己各场次的当前状态、确认截止时间和候补位置；组织者可查看自己场次的已确认、临时占座、候补通知占座、候补人数及对应名单。名单仅展示管理所需的账号标识、姓名、联系方式和状态，不向普通参与者公开。
+**FR-03: Browsing and queries.** Sort the event list by the nearest session start time. Support keyword search and an “open for registration” filter, with 20 entries per page by default. Details show session times, time zone, capacity, currently available seats, waitlist count, and registration status. Attendees may query their current status, confirmation deadline, and waitlist position for each session. Organizers may view counts and corresponding lists of confirmed bookings, temporary holds, seats held by waitlist offers, and waitlisted attendees for their sessions. Lists expose only account identifiers, names, contact details, and statuses necessary for management, and are not public to ordinary attendees.
 
-页面显示的剩余名额只表示查询时快照，最终结果以预约事务为准。验收应覆盖满员、报名尚未开放、已截止、已取消、分页及查询权限；同一数据库状态下，统计与明细必须一致。
+Displayed availability is a snapshot at query time; the booking transaction determines the final outcome. Acceptance covers full sessions, registration not yet open, closed registration, cancelled sessions, pagination, and query permissions. Counts and details must agree for the same database state.
 
-### 4.2 预约、确认与候补
+### 4.2 Booking, Confirmation, and Waitlisting
 
-**FR-04：预约与临时占座。** 一个账号在同一场次最多有一条有效参与记录，状态可以是待确认、候补中、候补待确认或已确认。无候补且有可分配名额时，预约成功生成临时占座，默认有效期为 5 分钟。满员或已有待分配的候补者时，不得绕过候补队列直接拿走空位；接口明确返回需要候补，由用户主动选择加入，不自动替用户排队。
+**FR-04: Booking and temporary holds.** An account may have at most one active participation record per session, in the held, waitlisted, offered, or confirmed state. When seats are available and no waitlist exists, a successful booking creates a temporary hold valid for 5 minutes by default. When the session is full or waitlisted attendees are awaiting allocation, new arrivals must not bypass the queue to take an available seat. The API must explicitly indicate that waitlisting is required; the user chooses whether to join and is not automatically enqueued.
 
-临时占座从持久化分配成功开始计时。有效截止时间取“分配时间加有效期”和“报名截止时间”中的较早者，并返回服务端时间及绝对截止时间。短于 5 分钟的剩余窗口应如实展示。API 只有在事务提交后才能返回占座成功。验收需验证抢最后一个名额、重复点击、多个标签页、已有候补但空位尚未分配，以及未开放或已截止时的预约请求。
+The hold period starts when allocation is successfully persisted. Its effective deadline is the earlier of “allocation time plus validity period” and “registration deadline.” Return server time and the absolute deadline. If less than 5 minutes remain, display the actual window. The API may report a successful hold only after the transaction commits. Acceptance covers competition for the last seat, repeated clicks, multiple browser tabs, an existing waitlist with seats not yet allocated, and booking requests before registration opens or after it closes.
 
-**FR-05：模拟支付与确认。** 待确认和候补待确认记录均通过同一模拟支付动作确认。模拟成功后直接成为已确认，不再增加一次待支付阶段，也不再次扣减名额。模拟失败保留原状态与原截止时间，允许在有效期内重试。页面明确标注“模拟支付，不产生实际扣款”，不采集银行卡等真实支付信息。
+**FR-05: Simulated payment and confirmation.** Both held and offered records are confirmed through the same simulated payment action. A simulated success immediately changes the record to confirmed, without another pending-payment stage or a second capacity deduction. A simulated failure preserves the original state and deadline, allowing retries within the validity window. The page must clearly state “Simulated payment; no actual charge” and must not collect real payment information such as bank card details.
 
-只有服务端在完成竞争状态检查时判定仍未到期，确认才有效；`当前时间 >= 截止时间` 时必须拒绝，即使过期 worker 尚未运行。确认与过期竞争时只能产生一个合法结果，不能同时出现已确认和已释放。验收覆盖成功、失败后重试、重复成功请求、截止前后边界及确认与回收并发。
+Confirmation is valid only if the server determines that the record has not expired when checking the competing state transitions. Reject confirmation when `current time >= deadline`, even if the expiration worker has not run. A confirmation/expiration race must produce only one valid outcome; the seat cannot be both confirmed and released. Acceptance covers success, retry after failure, repeated successful requests, boundaries immediately before and after the deadline, and confirmation concurrent with reclamation.
 
-**FR-06：加入与退出候补。** 仅在报名开放、场次未取消且需要候补时允许入队。若加入候补时已经有空位且没有其他候补者，返回可直接预约的结果，引导用户预约，不悄悄创建占座。每次有效入队获得该场次内持久化、唯一的顺序号；FIFO 以服务端串行确定的入队顺序为准，不以浏览器点击时间或客户端时间为准。
+**FR-06: Joining and leaving the waitlist.** Enqueueing is allowed only while registration is open, the session is not cancelled, and waitlisting is necessary. If a seat is already available and no other attendee is waiting, return a result indicating that direct booking is possible and guide the user to book, without silently creating a hold. Each valid enqueue operation receives a persistent, unique sequence number within the session. FIFO follows the enqueue order serialized by the server, not browser click times or client clocks.
 
-重复入队不产生新记录或改变顺序。位置从 1 开始，表示当前仍处于候补中的有效记录顺序；已收到限时通知的人不再占据候补排位。用户可退出，退出后重新加入排到队尾。此前预约取消或通知过期的用户也可在报名开放时重新申请，但不得继承旧优先级。验收覆盖同时入队、重复入队、中途退出、重新入队和动态排位更新。
+Repeated enqueue requests must not create additional records or change ordering. Positions start at 1 and reflect the ordering of currently active waitlisted records. Attendees who have received a time-limited offer no longer occupy a waitlist position. Users may leave and rejoin at the tail. Users whose previous booking was cancelled or whose offer expired may also reapply while registration is open, without inheriting their former priority. Acceptance covers concurrent joins, duplicate joins, withdrawal, rejoining, and dynamic position updates.
 
-**FR-07：自动递补与过期回收。** 已确认预约被取消、临时占座到期、候补通知被放弃或到期，以及容量增加时，系统自动为有效候补者分配空位。默认候补通知有效期为 10 分钟，同样不得超过报名截止时间。通知一旦生成即占用名额，是否在线、是否成功收到推送不影响计时；通知的权威记录必须先持久化，页面能通过查询找回。
+**FR-07: Automatic promotion and expiration reclamation.** When a confirmed booking is cancelled, a temporary hold expires, a waitlist offer is declined or expires, or capacity increases, the system automatically allocates available seats to eligible waitlisted attendees. Offers are valid for 10 minutes by default and must also end no later than the registration deadline. An offer occupies a seat as soon as it is created. Whether the user is online or successfully receives a push notification does not affect its timer. The authoritative offer record must be persisted first and retrievable through queries.
 
-一个空位只能对应一个有效通知。多个空位按 FIFO 顺序分配给不同用户；多个 worker 同时工作也不得越过队首、重复分配或超售。已退出、已失效或账号已禁用的候补者不再符合递补条件，应记录原因后跳过。通知到期后不自动重新排队，释放的名额继续向后分配。worker 重启后需根据持久化状态补处理到期任务，不能依赖进程内计时器存活。
+Each available seat may correspond to only one active offer. Allocate multiple seats to different users in FIFO order. Multiple concurrent workers must not skip the head of the queue, allocate duplicates, or overbook. Attendees who have withdrawn, become ineligible, or had their accounts disabled must be skipped with the reason recorded. Expired offers do not automatically rejoin the queue; their released seats pass to subsequent attendees. After restarting, workers must catch up on expired tasks from persisted state rather than relying on in-process timers surviving.
 
-到达报名截止时间后，不再接受预约、候补或确认，不再发新通知；未确认占座进入过期状态，剩余候补结束并记录“报名已截止”，已确认预约继续有效。验收覆盖连续多人不确认、通知临近报名截止、后台任务暂停后恢复、多 worker 重复执行及截止后仍有积压的情况。
+At the registration deadline, stop accepting bookings, waitlist joins, and confirmations, and stop issuing new offers. Unconfirmed holds expire; remaining waitlist entries end with the reason “Registration closed”; confirmed bookings remain valid. Acceptance covers successive attendees failing to confirm, offers issued near the registration deadline, recovery after background tasks are paused, duplicate execution by multiple workers, and backlog remaining after registration closes.
 
-**FR-08：取消与管理操作。** 参与者可在场次开始前取消待确认或已确认预约、退出候补、放弃候补通知；场次开始后只可查看历史状态。取消已确认预约不涉及真实退款。取消重复提交应保持同一结果，名额只能释放一次。
+**FR-08: Cancellation and administrative operations.** Before a session starts, attendees may cancel held or confirmed bookings, leave the waitlist, or decline offers. After the session starts, they may only view historical status. Cancelling a confirmed booking does not involve a real refund. Repeated cancellation requests must preserve the same outcome and release the seat only once.
 
-组织者可取消自己的活动或场次，管理员可取消任意活动或场次。取消后立即禁止新业务操作，已有预约和候补统一显示“活动已取消”，待处理通知失效，且不得继续递补；保留原始历史及取消原因。后台任务与取消操作并发时也必须遵守这一规则。管理员可以禁用账号和调整组织者权限，不能通过管理操作插队或绕过容量限制；禁用账号后拒绝其业务写入及私有订阅，未确认占座正常到期，候补失去递补资格，已确认预约保留，必要时由管理员明确取消。
+Organizers may cancel their own events or sessions; administrators may cancel any event or session. Cancellation must immediately prevent new business operations. Existing bookings and waitlist entries display “Event cancelled,” pending offers become invalid, and further promotion stops. Preserve the original history and cancellation reason. Background tasks running concurrently with cancellation must obey the same rule. Administrators may disable accounts and change organizer permissions, but must not use administrative operations to bypass the queue or capacity limits. Disabled accounts cannot perform business writes or subscribe to private updates. Their unconfirmed holds expire normally, their waitlist entries become ineligible for promotion, and their confirmed bookings remain unless explicitly cancelled by an administrator when necessary.
 
-验收覆盖重复取消、取消与确认及递补并发、整场活动取消、账号禁用和权限变化。管理操作应记录操作者、对象、时间和原因，便于解释状态变化。
+Acceptance covers repeated cancellation, cancellation concurrent with confirmation and promotion, whole-event cancellation, account disabling, and permission changes. Administrative operations must record the actor, target, time, and reason so that state changes can be explained.
 
-### 4.3 状态、实时反馈与异常处理
+### 4.3 States, Real-Time Feedback, and Error Handling
 
-各记录可按下面的产品状态展示；具体数据库表结构由实现决定，但不能改变这些含义。
+Records may be presented using the following product states. Database table design is an implementation decision, but these meanings must remain unchanged.
 
-| 状态 | 是否占用名额 | 允许的主要后续变化 |
+| State | Occupies a Seat? | Main Permitted Transitions |
 | --- | --- | --- |
-| 待确认 `HELD` | 是 | 模拟支付成功后已确认；主动取消；到期过期 |
-| 候补中 `WAITLISTED` | 否 | 获得空位后候补待确认；主动退出；报名截止或活动取消后结束 |
-| 候补待确认 `OFFERED` | 是 | 模拟支付成功后已确认；主动放弃；到期过期 |
-| 已确认 `CONFIRMED` | 是 | 开始前主动取消；管理取消 |
-| 已取消 `CANCELLED` | 否 | 终态，保留退出、报名截止、活动取消等原因 |
-| 已过期 `EXPIRED` | 否 | 终态，保留原截止时间 |
+| Held `HELD` | Yes | Confirmed after simulated payment succeeds; cancelled voluntarily; expired at the deadline |
+| Waitlisted `WAITLISTED` | No | Offered when a seat becomes available; withdrawn voluntarily; ended when registration closes or the event is cancelled |
+| Offered `OFFERED` | Yes | Confirmed after simulated payment succeeds; declined voluntarily; expired at the deadline |
+| Confirmed `CONFIRMED` | Yes | Cancelled voluntarily before the start; cancelled administratively |
+| Cancelled `CANCELLED` | No | Terminal state; retain reasons such as withdrawal, registration closure, or event cancellation |
+| Expired `EXPIRED` | No | Terminal state; retain the original deadline |
 
-所有分配都必须满足：**待确认数 + 候补待确认数 + 已确认数 ≤ 场次容量**。尚未执行回收的过期记录不能确认，但在名额分配之前必须先原子地完成释放，不能仅凭缓存或时间显示提前复用名额。终态记录不复活；重新报名建立新的参与尝试，旧请求重试不得影响新记录。已确认记录在活动结束后仍保留，页面通过场次时间标注“已结束”，不必增加一套签到状态。
+Every allocation must satisfy: **held count + offered count + confirmed count ≤ session capacity**. An expired record that has not yet been reclaimed cannot be confirmed, but its seat must be released atomically before being allocated again. Seats must not be reused early based solely on cached values or a displayed timer. Terminal records cannot be revived. Re-registration creates a new participation attempt, and retries of old requests must not affect the new record. Confirmed records remain after an event ends. The page labels them “Ended” based on session time, without requiring an additional set of check-in states.
 
-**FR-09：实时更新与恢复。** 场次名额和候补人数变化可推送给正在查看该场次的用户；个人预约状态、候补位置和通知仅推送给本人，管理名单仅对有权限者可见。所有推送只能发生在数据库事务提交之后。重复或乱序推送不能让页面从新状态退回旧状态；可通过版本比较，或把通知作为重新查询的触发信号实现。
+**FR-09: Real-time updates and recovery.** Changes to session availability and waitlist counts may be pushed to users viewing that session. Personal booking status, waitlist position, and offers are pushed only to the relevant user; management lists are visible only to authorized users. All pushes must occur after database transaction commit. Duplicate or out-of-order pushes must not move the page from a newer state back to an older one. This may be implemented through version comparison or by treating notifications as triggers to query current state.
 
-首次进入页面、WebSocket 重连及操作结果不确定时，客户端通过 REST 读取当前状态。连接中断时显示“实时连接暂不可用”，自动重连，并每 10 秒轮询当前页面需要的状态；恢复连接后停止降级轮询。前端倒计时仅用于展示，归零后刷新状态，不能自行判定确认成功或释放名额。验收覆盖丢失推送、重复和乱序消息、断网期间收到候补通知、网关重启及尝试订阅他人私有状态。
+On initial page entry, WebSocket reconnection, or an uncertain operation outcome, the client retrieves current state through REST. When disconnected, display “Real-time connection temporarily unavailable,” reconnect automatically, and poll the state needed by the current page every 10 seconds. Stop fallback polling once connected. Frontend countdowns are for display only; refresh state when they reach zero rather than independently declaring confirmation success or releasing a seat. Acceptance covers lost pushes, duplicate and out-of-order messages, offers issued while the client is offline, gateway restarts, and attempts to subscribe to another user's private state.
 
-**FR-10：重复请求、限流与失败反馈。** 预约、确认、取消、候补等写入必须具备幂等语义。客户端重试同一操作应复用请求标识；相同标识、不同业务参数应被拒绝。即使不同请求标识同时到达，也必须由数据库约束避免重复有效记录。幂等记录至少保留 24 小时，状态变化及任务消费必须长期避免重复副作用。
+**FR-10: Duplicate requests, rate limiting, and failure feedback.** Writes such as booking, confirmation, cancellation, and waitlist operations must have idempotent semantics. Client retries of the same operation reuse its request identifier. Reject the same identifier with different business parameters. Database constraints must prevent duplicate active records even when different request identifiers arrive concurrently. Retain idempotency records for at least 24 hours; state transitions and task consumption must continue preventing duplicate side effects over the long term.
 
-超时不能直接显示“预约失败”并诱导创建第二次预约，应提示“结果确认中”并查询原请求或当前参与记录。接口提供稳定的错误码和可读提示，区分满员、已截止、已过期、权限不足、参数错误、限流及服务暂不可用。报名相关写入默认按账号限流为每分钟 30 次，登录按来源 IP 每分钟 10 次；阈值可配置，正常查询和 WebSocket 保活不计入报名写入额度。触发限流返回 429 及重试提示。
+A timeout must not immediately display “Booking failed” and encourage a second booking. Instead, display “Checking result” and query the original request or current participation record. APIs provide stable error codes and readable messages distinguishing full capacity, closed registration, expiration, insufficient permission, invalid parameters, rate limiting, and temporary service unavailability. By default, registration-related writes are limited to 30 per account per minute, and login attempts to 10 per source IP per minute. Thresholds are configurable. Ordinary queries and WebSocket keepalives do not count toward the registration-write quota. Rate limiting returns 429 with retry guidance.
 
-验收覆盖提交成功但响应丢失、相同请求跨副本重试、旧取消请求重放到重新报名之后、队列任务重复执行及限流恢复。服务不可用时不得返回虚假的业务成功。
+Acceptance covers successful commits with lost responses, retries across replicas, replaying an old cancellation request after re-registration, duplicate queue-task execution, and recovery after rate limiting. Service unavailability must not produce a false business success response.
 
-前端采用活动列表、活动详情、“我的报名”和管理页四类轻量页面。详情页根据当前状态展示“预约”“加入候补”“模拟支付并确认”或“取消”等主操作；候补位置说明为“当前第 N 位，不保证获得名额”。“我的报名”优先展示需要限时确认的记录。所有写入操作显示提交进度并暂时防止重复点击，取消和管理性取消使用简洁确认弹窗。页面应适配桌面及手机浏览器，用文字和颜色共同表达状态，并支持基本键盘操作。
+The frontend uses four lightweight page types: event list, event details, “My Registrations,” and management pages. Depending on current state, the details page shows primary actions such as “Book,” “Join Waitlist,” “Simulate Payment and Confirm,” or “Cancel.” Explain waitlist position as “Currently number N; a seat is not guaranteed.” “My Registrations” prioritizes records requiring time-limited confirmation. All writes show submission progress and temporarily prevent repeated clicks. Cancellations and administrative cancellations use simple confirmation dialogs. Pages should work on desktop and mobile browsers, communicate state using both text and color, and support basic keyboard operation.
 
-## 5. 技术约束与非功能要求
+## 5. Technical Constraints and Nonfunctional Requirements
 
-**FR-11：部署、数据与恢复。** 沿用提案中的 FastAPI、PostgreSQL、Redis、独立后台 worker 和 WebSocket 网关。使用 Docker 与 Docker Compose 提供本地完整启动方式，以 uv 和锁文件固定 Python 依赖；Kubernetes 配置先在 minikube 验证，再部署至 DigitalOcean Kubernetes。PostgreSQL 和 Redis 使用 StatefulSet、PVC 与相应持久化存储；无状态组件使用 Deployment、Service 和健康探针，通过 HTTPS/WSS 对外服务。数据库和 Redis 不直接暴露到公网，凭据由 Kubernetes Secrets 或本地环境配置注入，不写入仓库。
+**FR-11: Deployment, data, and recovery.** Retain FastAPI, PostgreSQL, Redis, separate background workers, and the WebSocket gateway from the proposal. Use Docker and Docker Compose to start the complete local stack, with uv and its lockfile pinning Python dependencies. Validate Kubernetes configuration in minikube before deploying to DigitalOcean Kubernetes. PostgreSQL and Redis use StatefulSets, PVCs, and corresponding persistent storage. Stateless components use Deployments, Services, and health probes, with external access over HTTPS/WSS. Do not expose PostgreSQL or Redis directly to the public internet. Inject credentials through Kubernetes Secrets or local environment configuration rather than committing them to the repository.
 
-PostgreSQL 是用户、活动、场次、参与记录、候补顺序和截止时间的唯一权威来源。Redis 承担限流和 Pub/Sub 等辅助功能，丢失缓存或通知不能丢失预约事实。后台回收与递补必须可从数据库恢复；关键任务不能只依赖 Redis Pub/Sub。可以采用数据库扫描完成可靠处理，若引入 outbox、Redis Streams 或延迟队列，则需单独说明它们解决的问题，不将提案中的探索方案全部视为必须实现的架构。
+PostgreSQL is the sole source of truth for users, events, sessions, participation records, waitlist ordering, and deadlines. Redis supports rate limiting, Pub/Sub, and other auxiliary functions. Losing cached data or notifications must not lose booking facts. Background reclamation and promotion must be recoverable from the database; critical tasks must not depend solely on Redis Pub/Sub. Database scanning may provide reliable processing. If an outbox, Redis Streams, or a delay queue is introduced, explain the particular problem it solves rather than treating every exploratory proposal as mandatory architecture.
 
-Redis 不可用时允许查询数据库中的状态，页面降级轮询；为避免限流失效，报名相关写入暂时返回 503，后台仍可按数据库规则回收和递补。PostgreSQL 不可用时拒绝业务写入，明确显示暂不可用，不降级为在 Redis 中独立分配名额。恢复后重新同步状态。数据库时间统一使用 UTC，界面展示明确时区；确认和过期判断应在取得相应并发控制后使用有效的数据库当前时间，不能使用等待锁之前的陈旧时间。
+When Redis is unavailable, database-backed state queries remain available and pages fall back to polling. Registration-related writes temporarily return 503 to avoid operating without rate limiting; background processes may continue reclamation and promotion under database rules. When PostgreSQL is unavailable, reject business writes and clearly indicate temporary unavailability. Do not fall back to allocating seats independently in Redis. Resynchronize state after recovery. Store database times in UTC and display an explicit time zone. Confirmation and expiration checks must use a valid current database time after acquiring the relevant concurrency controls, rather than a stale time obtained before waiting for a lock.
 
-验收包括按文档从干净环境启动、数据库迁移、云端部署、滚动重启与依赖中断恢复。确认持久卷重新挂载后记录和截止时间不变，数据库暂时中断期间没有虚假成功。单实例 PostgreSQL 是本版本接受的可用性限制；持久卷不等于备份，本版本不承诺磁盘损坏、误删或整个区域故障下的数据恢复能力。
+Acceptance includes startup from a clean environment following the documentation, database migrations, cloud deployment, rolling restarts, and recovery from dependency outages. Verify that records and deadlines remain unchanged after persistent volumes are remounted, and that a temporary database outage produces no false successes. A single PostgreSQL instance is an accepted availability limitation for this release. Persistent volumes are not backups; this release does not promise data recovery from disk corruption, accidental deletion, or a region-wide outage.
 
-**FR-12：可观测性与扩缩容。** 使用 Prometheus、Grafana 和 DigitalOcean Monitoring 观察服务与资源状态。至少提供请求量、延迟、错误率、预约及确认结果、到期处理积压、最老积压年龄、候补递补延迟、容量违规、数据库连接数、Redis 内存、WebSocket 连接数和副本数。日志包含请求或关联标识、场次和操作结果，避免记录密码、完整令牌和不必要的个人信息。
+**FR-12: Observability and scaling.** Use Prometheus, Grafana, and DigitalOcean Monitoring to observe services and resources. At minimum, expose request volume, latency, error rate, booking and confirmation outcomes, expiration-processing backlog, age of the oldest overdue task, waitlist promotion latency, capacity violations, database connections, Redis memory, WebSocket connections, and replica counts. Logs include a request or correlation identifier, session, and operation outcome, while avoiding passwords, complete tokens, and unnecessary personal information.
 
-容量违规应立即告警；到期任务最老积压超过 30 秒并持续 1 分钟，或非预期 5xx 比例在 5 分钟窗口超过 5%，应显示告警。通过安全的测试指标或故障注入验证告警链路，不必真的制造生产超售。API 与 WebSocket 网关配置 HPA，初始可按 1～3 副本和 CPU 60% 目标验证，实际值根据云资源调整并记录。数据库连接池总预算必须考虑最大副本数与 worker 连接，保留管理余量；增加应用副本不等于增加数据库吞吐。
+Alert immediately on capacity violations. Also alert when the oldest overdue expiration task remains more than 30 seconds overdue for 1 minute, or when unexpected 5xx responses exceed 5% in a 5-minute window. Verify the alerting path using safe test metrics or fault injection, without deliberately causing production overbooking. Configure HPA for the API and WebSocket gateway. Initial validation may use 1–3 replicas and a 60% CPU target; adjust actual settings to available cloud resources and document them. The total database connection-pool budget must account for maximum replica counts and worker connections, leaving administrative headroom. More application replicas do not necessarily increase database throughput.
 
-验收需提供可复现压测脚本、仪表盘、告警触发证据和扩缩容实验记录。WebSocket 网关缩容时允许客户端重连，但不得丢失持久业务状态。不承诺线性扩容，也不通过取消容量校验换取吞吐。
+Acceptance requires reproducible load-test scripts, dashboards, evidence of triggered alerts, and scaling experiment records. Clients may reconnect when the WebSocket gateway scales in, but persisted business state must not be lost. Linear scaling is not promised, and capacity validation must not be removed to improve throughput.
 
-安全要求还包括密码哈希存储、凭据不进入客户端、管理操作审计，以及鉴权令牌失效或账号禁用后拒绝继续访问受保护资源。用户输入必须在服务端验证，所有持久化修改使用数据库事务和必要约束。具体锁策略、表结构和 API 路由留给技术设计，但需要证明其满足第 4 节的业务规则。
+Security requirements also include hashed password storage, keeping credentials out of the client, auditing administrative operations, and denying continued access to protected resources after authentication tokens expire or accounts are disabled. Validate user input on the server. All persisted modifications use database transactions and necessary constraints. Specific locking strategies, table structures, and API routes are left to technical design, which must demonstrate compliance with the business rules in Section 4.
 
-## 6. 依赖、风险与应对
+## 6. Dependencies, Risks, and Mitigation
 
-下面的责任主体表示所需职能，不指定个人，也不沿用提案原分工；项目团队在执行时确定实际负责人。外部资源当前均未核验。
+The responsibilities below describe required functions, without assigning individuals or adopting the proposal's original team assignments. The project team determines actual owners during execution. External resources have not yet been verified.
 
-| 依赖或风险 | 对交付的影响与处理方式 | 跟进角色 |
+| Dependency or Risk | Delivery Impact and Response | Follow-up Role |
 | --- | --- | --- |
-| DigitalOcean 账号、配额、预算、域名和 TLS | 决定 DOKS、持久卷及公网演示能否落地。尽早验证最小部署与证书；购买资源前确认预算上限，本地先保持完整可运行。 | 部署维护者；预算由项目负责人确认 |
-| 状态与接口理解不一致 | 容易造成前端显示成功而后端已过期。实现前固定状态、错误码、截止时间含义和消息契约，联调使用同一组状态样例。 | 后端与前端实现者共同维护 |
-| 并发竞争、任务重试和多副本 | 可能重复占座、释放或递补。通过事务、约束和幂等处理保证正确性，重点验证最后一个名额及确认/过期竞争。 | 后端实现者；测试执行者复核 |
-| 数据提交成功但通知丢失 | 用户可能错过限时确认。数据库保留通知状态，重连查询与降级轮询补偿；界面明确离线期间倒计时继续。 | 实时通信与前端实现者 |
-| 单数据库故障与连接耗尽 | 应用扩容可能放大压力。限制连接预算，监测积压和连接数，验证重启恢复；不宣称具备数据库高可用。 | 后端实现者与部署维护者 |
-| 范围或时间压力 | 优先确保容量、候补、持久化正确，再完成实时和扩缩容评估。可先缩减可选性能实验与界面装饰；若削减本次已承诺功能，由项目负责人确认并更新范围。 | 项目负责人 |
+| DigitalOcean account, quotas, budget, domain, and TLS | Determine whether DOKS, persistent volumes, and a public demonstration can be delivered. Validate a minimal deployment and certificates early. Confirm the budget ceiling before purchasing resources, while maintaining a fully runnable local environment. | Deployment maintainer; project lead confirms the budget |
+| Inconsistent understanding of states and interfaces | The frontend may show success after the backend record has expired. Fix states, error codes, deadline semantics, and message contracts before implementation; use shared state examples during integration. | Backend and frontend implementers jointly |
+| Concurrency races, task retries, and multiple replicas | May cause duplicate holds, releases, or promotions. Ensure correctness through transactions, constraints, and idempotent handling, focusing on the last seat and confirmation/expiration races. | Backend implementer; test executor reviews |
+| Successful data commit but lost notification | Users may miss time-limited confirmation. Persist offer state in the database and compensate through reconnection queries and fallback polling. Clearly state that countdowns continue while offline. | Real-time communication and frontend implementers |
+| Single-database failure and connection exhaustion | Application scaling may amplify pressure. Limit connection budgets, monitor backlog and connection counts, and verify restart recovery. Do not claim database high availability. | Backend implementer and deployment maintainer |
+| Scope or schedule pressure | First ensure correctness of capacity, waitlisting, and persistence, then complete real-time and scaling evaluation. Optional performance experiments and visual polish may be reduced first. Any removal of committed functionality requires the project lead's confirmation and a scope update. | Project lead |
 
-## 7. 交付检查点与验收方式
+## 7. Delivery Checkpoints and Acceptance Approach
 
-这里按依赖关系定义检查点，不给出人员分配、工期或固定日期。实际排期由团队根据当前进度安排。
+These checkpoints follow dependency order without assigning people, durations, or fixed dates. The team schedules actual work according to current progress.
 
-| 检查点 | 可交付内容与通过条件 |
+| Checkpoint | Deliverables and Passing Conditions |
 | --- | --- |
-| 业务与环境就绪 | 状态及接口契约确定；Compose 可启动；最小云端服务连通持久化数据库，数据库 Pod 重启后数据保留。 |
-| 核心业务闭环 | FR-01～FR-08、FR-10 的正常与异常场景通过；并发占座、确认/过期竞争和 FIFO 递补有可重复测试。 |
-| 可演示的云端版本 | FR-09、FR-11 通过；轻量前端、HTTPS、权限与实时更新连通，能演示超额报名、取消、递补、确认与断线恢复。 |
-| 最终质量验收 | FR-12 及第 2 节指标完成验证；提供部署说明、测试结果、故障与扩缩容实验、已知限制和演示流程。 |
+| Business rules and environment ready | State and interface contracts agreed; Compose starts successfully; a minimal cloud service connects to a persistent database, with data retained after a database Pod restart. |
+| Complete core workflow | Normal and exceptional scenarios for FR-01–FR-08 and FR-10 pass. Reproducible tests cover concurrent holds, confirmation/expiration races, and FIFO promotion. |
+| Demonstrable cloud release | FR-09 and FR-11 pass. The lightweight frontend, HTTPS, permissions, and real-time updates work together, demonstrating oversubscribed registration, cancellation, promotion, confirmation, and reconnection recovery. |
+| Final quality acceptance | FR-12 and Section 2 metrics are verified. Deliver deployment instructions, test results, failure and scaling experiments, known limitations, and a demonstration procedure. |
 
-每条 FR 后给出的验收场景作为对应测试的最小范围，由实现者提交证据、团队测试执行者复核，项目负责人确认范围和用户流程；角色可由现有成员兼任。后端规则优先用自动化集成测试验证，实时交互使用浏览器联调验证，云端能力使用部署和故障实验验证。最终报告必须区分“通过”“失败”“尚未执行”，不能用未测代替通过。
+The acceptance scenarios following each FR define the minimum scope of its tests. Implementers submit evidence, the team's test executor reviews it, and the project lead confirms scope and user workflows. Existing team members may hold multiple roles. Prefer automated integration tests for backend rules, browser-based integration checks for real-time interactions, and deployment and failure experiments for cloud capabilities. The final report must distinguish “Passed,” “Failed,” and “Not yet executed”; untested behavior cannot be counted as passed.
 
-建议演示使用一个容量为 2 的场次：两人占座，第三、第四人候补；第一人确认，第二人放弃，第三人获得通知并确认；随后取消一个已确认预约，第四人获得通知但未及时确认，系统自动回收。过程中展示候补位置、容量统计、实时更新，并在一次 worker 重启后验证原截止时间仍有效。为缩短演示可通过配置使用更短有效期，报告注明该配置，另行验证生产默认的 5 分钟与 10 分钟规则。
+For the demonstration, use a session with capacity 2: two attendees obtain holds, and a third and fourth join the waitlist. The first confirms, the second relinquishes the hold, and the third receives an offer and confirms. Then cancel a confirmed booking; the fourth receives an offer but does not confirm in time, and the system automatically reclaims the seat. Show waitlist positions, capacity statistics, and real-time updates throughout, and verify after a worker restart that original deadlines remain valid. Shorter validity periods may be configured to shorten the demonstration, provided the report documents that configuration and separately verifies the production defaults of 5 and 10 minutes.
 
-## 8. 默认决策与尚待落实事项
+## 8. Default Decisions and Outstanding Items
 
-本文默认采用单人单场次一个名额、占座 5 分钟、候补通知 10 分钟、严格 FIFO、候补通知占用名额、模拟支付成功即确认，以及所有确认窗口不超过报名截止时间。这些是为保持实现简单和行为一致而补充的产品决定，可以直接作为开发依据。有效期及限流阈值由环境配置管理，不增加复杂的组织者设置页面；参数变更只作用于新记录，不追溯修改已持久化的截止时间。
+This document adopts one seat per person per session, 5-minute holds, 10-minute waitlist offers, strict FIFO, offers that occupy seats, immediate confirmation after simulated payment success, and confirmation windows that never extend beyond the registration deadline. These additional product decisions keep implementation simple and behavior consistent and may be used directly as development requirements. Validity periods and rate-limit thresholds are managed through environment configuration, without adding complex organizer settings pages. Parameter changes apply only to new records and do not retroactively alter persisted deadlines.
 
-目前没有阻塞本地开发的产品问题。上线前需由项目负责人落实云资源预算、目标部署规格和实际验收日期，由部署维护者落实域名及 TLS；这些信息不能从提案中推定。是否采用 Redis 预扣库存，由后端实现者提交数据库基线与实验方案的对照结果后再决定，不作为首版完成的前置条件。
+No product questions currently block local development. Before launch, the project lead must establish the cloud budget, target deployment specifications, and actual acceptance date; the deployment maintainer must arrange the domain and TLS. These details cannot be inferred from the proposal. Whether to adopt Redis inventory pre-deduction will be decided after the backend implementer provides a comparison between the database baseline and the experimental approach; it is not a prerequisite for completing the first release.
 
-若后续需求涉及真实支付、付费购买云资源、改变候补公平规则，或删减容量与持久化保证，应先由项目负责人作出决定并更新本文。普通界面布局、错误文案和不改变业务语义的实现细节由实现者自行确定。
-
-依据文件为 [Project_Proposal.md](Project_Proposal.md) 第 1、2、4 节与 [planned-system-architecture.svg](planned-system-architecture.svg)。本版为首次建立的中文 PRD，未复用提案第 3 节的排期与人员职责。
+If future requirements involve real payments, purchasing paid cloud resources, changing waitlist fairness rules, or reducing capacity and persistence guarantees, the project lead must decide first and update this document. Implementers may independently determine ordinary page layouts, error wording, and implementation details that do not change business semantics.
