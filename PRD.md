@@ -359,13 +359,13 @@ This document adopts one seat per person per session, 5-minute holds, 10-minute 
 | Overdue-task alert | Oldest task more than 30 seconds overdue for 1 minute | NFR-02 |
 | Error-rate alert | Unexpected 5xx above 5% in a 5-minute window | NFR-02 |
 
-Three engineering items are still open and block parallel feature work. Each needs a named owner before implementation starts.
+Version 1.2 listed three open engineering items. The [technical design document](TECHNICAL_DESIGN.md) has since resolved two of them. The third is still open and needs a decision by the team before implementation starts.
 
-| Open item | What must be decided |
-| --- | --- |
-| API and message contract | REST routes, request and response schemas, the full error-code table, and WebSocket message formats. The first checkpoint in Section 7 depends on it. |
-| Authentication scheme | Token type and lifetime, how a disabled account loses access at once, and how the WebSocket handshake authenticates. |
-| Role assignment | Which team member acts as project lead, test executor, deployment maintainer, and each implementer named in Section 6. |
+| Item | Status | Where it is decided |
+| --- | --- | --- |
+| API and message contract | Resolved | Technical design, Section 8 for REST routes, schemas and the error-code table; Section 10 for WebSocket messages, Redis names and the publication matrix. |
+| Authentication scheme | Resolved | Technical design, Section 9 for token type and lifetime, immediate loss of access for a disabled account, and the WebSocket handshake; database design, Section 2.5 for the stored refresh tokens. |
+| Role assignment | Open | Which team member acts as project lead, test executor, deployment maintainer, and each implementer named in Section 6. Also listed in technical design, Section 18. |
 
 No product questions currently block local development. Before launch, the project lead must establish the cloud budget, target deployment specifications, and actual acceptance date; the deployment maintainer must arrange the domain and TLS. These details cannot be inferred from the proposal. Whether to adopt Redis inventory pre-deduction will be decided after the backend implementer provides a comparison between the database baseline and the experimental approach; it is not a prerequisite for completing the first release.
 
