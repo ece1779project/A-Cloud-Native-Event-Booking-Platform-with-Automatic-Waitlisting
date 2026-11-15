@@ -24,6 +24,8 @@ The following work remains to be implemented:
 - WebSocket gateway and frontend.
 - Kubernetes manifests, migration jobs, monitoring, dashboards, alerts, or load tests.
 
+The package skeleton in Section 5 is in place: every module exists with a statement of its responsibility, and the API still serves only the scaffold health endpoint.
+
 The remaining sections describe planned behavior rather than completed or measured results.
 
 ## 3. Goals, constraints, and decisions
@@ -154,34 +156,95 @@ flowchart LR
 - Fans out post-commit invalidations.
 - May be lost without losing booking facts. Redis persistence improves restart behavior but is not a correctness boundary.
 
-## 5. Proposed repository structure
+## 5. Repository structure
 
-The API, workers, and WebSocket gateway share one Python package and image. Different container commands start different process types.
+The API, workers, and WebSocket gateway share one Python package and image. Different container commands start different process types. The backend package and the test and deployment directories exist as a skeleton: each module carries a docstring that states its responsibility and the section of this document it implements, and no business behavior is implemented yet.
 
 ```text
 .
-├── app/
-│   ├── main.py                  # FastAPI factory and lifecycle
-│   ├── api/
-│   │   ├── dependencies.py      # Authentication, DB, request context
-│   │   └── v1/                  # Auth, events, sessions, participations, admin
-│   ├── core/
-│   │   ├── config.py
-│   │   ├── errors.py
+├── app/                              # One package, one image, three process types
+│   ├── main.py                       # API process: FastAPI factory and lifecycle
+│   ├── api/                          # HTTP transport only
+│   │   ├── dependencies.py           # Authentication, DB, request context, rate limits
+│   │   ├── exception_handlers.py     # Error envelope (Section 8.1)
+│   │   ├── middleware.py             # Request ID, access log, HTTP metrics
+│   │   ├── health.py                 # Health and metrics endpoints (Section 13.3)
+│   │   └── v1/                       # One module per route group in Section 8
+│   │       ├── router.py             # The only place a route module is registered
+│   │       ├── accounts.py
+│   │       ├── auth.py
+│   │       ├── events.py
+│   │       ├── sessions.py
+│   │       ├── participations.py
+│   │       ├── admin.py
+│   │       └── realtime.py           # Ticket issuance only
+│   ├── core/                         # Infrastructure with no business knowledge
+│   │   ├── config.py                 # Settings (Section 13.5)
+│   │   ├── constants.py              # Values fixed by this design
+│   │   ├── errors.py                 # Exceptions and stable error codes
 │   │   ├── logging.py
 │   │   ├── metrics.py
-│   │   └── security.py
+│   │   ├── security.py               # Password hashing, token signing, digests
+│   │   ├── redis_client.py
+│   │   ├── redis_keys.py             # Every Redis name (Section 10.5)
+│   │   └── rate_limit.py             # Redis limiter and in-process fallback
+│   ├── domain/                       # Pure rules: no I/O, no imports from app
+│   │   ├── enums.py                  # Roles, statuses, states, reason and result codes
+│   │   ├── transitions.py            # Participation state machine
+│   │   └── timing.py                 # Registration window and deadline rules
 │   ├── db/
-│   │   ├── base.py
-│   │   ├── engine.py
-│   │   └── locks.py             # The only business-write lock entry point
-│   ├── models/
-│   ├── schemas/
-│   ├── services/                # Transactional command and query services
-│   ├── realtime/                # Publish and WebSocket gateway
-│   └── workers/                 # Scan loops and candidate handlers
-├── migrations/
-├── frontend/
+│   │   ├── base.py                   # DeclarativeBase and naming convention
+│   │   ├── engine.py                 # Engine, session factory, timeouts
+│   │   └── locks.py                  # The only business-write lock entry point
+│   ├── models/                       # One module per table
+│   │   ├── account.py
+│   │   ├── auth_session.py
+│   │   ├── event.py
+│   │   ├── event_session.py
+│   │   ├── participation.py
+│   │   ├── participation_change.py
+│   │   ├── request_result.py
+│   │   └── management_action.py
+│   ├── schemas/                      # Pydantic contracts (Sections 8.6 and 10.1)
+│   │   ├── common.py                 # Envelopes, meta, pagination cursor
+│   │   ├── accounts.py
+│   │   ├── auth.py
+│   │   ├── events.py
+│   │   ├── sessions.py
+│   │   ├── participations.py
+│   │   └── realtime.py               # Every WebSocket message (Section 10.5)
+│   ├── services/                     # Transactional command and query services
+│   │   ├── accounts.py
+│   │   ├── auth.py
+│   │   ├── events.py
+│   │   ├── sessions.py               # Includes capacity change and roster
+│   │   ├── booking.py                # Direct booking and waitlist join
+│   │   ├── participations.py         # Confirm, cancel, decline, leave, queries
+│   │   ├── promotion.py              # Promote steps, shared with workers
+│   │   ├── expiration.py             # Expiry and registration closure
+│   │   ├── idempotency.py            # Command receipts
+│   │   └── audit.py                  # History and management-action writers
+│   ├── realtime/
+│   │   ├── publisher.py              # Post-commit publication (API and workers)
+│   │   ├── tickets.py                # Issue (API) and consume (gateway)
+│   │   └── gateway/                  # WebSocket gateway process
+│   │       ├── main.py               # Gateway entry point
+│   │       ├── connection.py         # Upgrade, heartbeat, revalidation, close codes
+│   │       ├── subscriptions.py      # Channel parsing, authorization, limits
+│   │       └── fanout.py             # Redis pattern subscription and routing
+│   ├── workers/                      # Background worker process
+│   │   ├── __main__.py               # Worker entry point
+│   │   ├── runner.py                 # Scan loop: interval, batch, backoff, shutdown
+│   │   ├── expiry.py                 # Scan 1 in Section 11
+│   │   ├── closure.py                # Scan 2
+│   │   ├── promotion.py              # Scan 3
+│   │   └── invariant.py              # Scan 4
+│   └── cli/                          # One-off commands
+│       ├── bootstrap_admin.py
+│       └── export_openapi.py
+├── migrations/                       # Created by `alembic init -t async migrations`
+├── alembic.ini                       # Created by the same command
+├── frontend/                         # Created by the Vite scaffold in Phase 4
 │   ├── src/
 │   │   ├── api/
 │   │   ├── auth/
@@ -191,24 +254,59 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   │   └── routes/
 │   └── package.json
 ├── deploy/
-│   ├── compose/
 │   ├── kubernetes/
 │   │   ├── base/
 │   │   └── overlays/
-│   ├── monitoring/
+│   │       ├── minikube/
+│   │       └── doks/
+│   ├── monitoring/                   # Prometheus, Grafana, alert rules
 │   └── scripts/
 ├── tests/
-│   ├── unit/
-│   ├── integration/
-│   ├── concurrency/
-│   ├── contract/
+│   ├── conftest.py
+│   ├── unit/                         # domain, core, schema validation; no database
+│   ├── integration/                  # Services and routes against PostgreSQL and Redis
+│   ├── concurrency/                  # Races over independent connections
+│   ├── contract/                     # OpenAPI, codes, message fixtures, Redis names
+│   │   └── fixtures/
 │   └── load/
 ├── compose.yaml
 ├── Dockerfile
 └── pyproject.toml
 ```
 
-Route handlers validate transport data and call services. Services own authorization-sensitive business decisions and transactions. Models never publish messages. Realtime publication receives committed result objects after the transaction context has exited.
+`migrations/`, `alembic.ini`, and `frontend/` are absent until their generators run, because both generators expect an empty target directory.
+
+### 5.1 Process entry points
+
+| Process | Command | Module |
+| --- | --- | --- |
+| API | `uvicorn app.main:app` | `app/main.py` |
+| WebSocket gateway | `uvicorn app.realtime.gateway.main:app` | `app/realtime/gateway/main.py` |
+| Workers | `python -m app.workers` | `app/workers/__main__.py` |
+| Administrator bootstrap | `python -m app.cli.bootstrap_admin` | `app/cli/bootstrap_admin.py` |
+| OpenAPI export for CI | `python -m app.cli.export_openapi` | `app/cli/export_openapi.py` |
+
+### 5.2 Layering rules
+
+A module imports only from layers below its own:
+
+```text
+api, workers, realtime/gateway, cli       entry layers
+services                                  business transactions
+realtime/publisher, realtime/tickets      post-commit Redis side effects
+schemas, models, db                       contracts and persistence
+domain, core                              leaves; import nothing from app
+```
+
+- Route handlers validate transport data, call one service, and publish its committed result. They open no transaction and take no lock.
+- Services own authorization-sensitive business decisions and transactions. A service is called by route handlers and by workers, knows nothing about HTTP, and never imports `app.api`, `app.workers`, or `app.realtime`.
+- A service returns its committed result together with the invalidations to publish. The caller, a route handler or a worker loop, passes them to `realtime/publisher.py` after the service returns, so publication can never run inside a transaction.
+- Models hold columns, constraints, and indexes only. Models never publish messages.
+- `domain` holds the state machine and time rules as pure functions. Models, schemas, services, workers, and the gateway share its enumerations, and unit tests cover it without a database.
+- A worker scan only selects candidates. Each candidate is handled through the same service and lock entry point as an API command.
+- The gateway reads PostgreSQL only for the account-state and ownership checks in Section 10.2 and never calls a service that writes.
+
+The modules, schemas, routes, and services for one resource share a name, for example `api/v1/events.py`, `schemas/events.py`, `services/events.py`, and `models/event.py`. A new resource adds one module to each layer and one line to `api/v1/router.py`. A new scan adds one module to `workers/` and registers it in `workers/__main__.py`.
 
 ## 6. Domain and persistence design
 
