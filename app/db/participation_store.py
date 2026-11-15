@@ -1,7 +1,7 @@
 """Participation reads and low-level writes (DATABASE_DESIGN Sections 3-5, 7).
 
 Functions that change a session or append history assume the caller already
-holds that session's lock from ``app.modules.booking.locking``.
+holds that session's lock from ``app.db.locks``.
 """
 
 import uuid
@@ -11,13 +11,13 @@ from datetime import datetime
 from sqlalchemy import Row, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.booking.models import (
+from app.models.event import EventSession
+from app.models.participation import (
     ACTIVE_STATES,
     Participation,
     ParticipationChange,
     ParticipationState,
 )
-from app.modules.events.models import EventSession
 
 
 @dataclass(frozen=True, slots=True)

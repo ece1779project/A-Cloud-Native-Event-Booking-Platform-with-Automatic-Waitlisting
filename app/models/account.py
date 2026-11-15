@@ -5,7 +5,7 @@ from enum import StrEnum
 from sqlalchemy import CheckConstraint, DateTime, Index, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from app.infra.db import Base
+from app.db.base import Base
 
 
 class Role(StrEnum):

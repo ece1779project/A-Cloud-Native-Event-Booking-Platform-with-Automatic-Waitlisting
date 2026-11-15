@@ -1,4 +1,4 @@
-"""The single lock-acquisition entry point (DATABASE_DESIGN Section 4).
+"""The single lock-acquisition entry point (DATABASE_DESIGN Section 4, TECHNICAL_DESIGN 7.1).
 
 The capacity rule (occupied <= capacity) has no database constraint behind it.
 It holds only because every writer -- API and workers alike -- takes row locks
@@ -15,7 +15,7 @@ head's account afterwards with ``lock_queue_head_account`` (shared only, which
 cannot deadlock -- see the design's Promote section).
 
 Every lock re-reads the row (populate_existing) so callers never act on stale
-identity-map state. Read the clock with ``app.infra.db.db_now`` only after
+identity-map state. Read the clock with ``app.db.engine.db_now`` only after
 these calls return. Locking rows any other way fails review.
 """
 
@@ -26,8 +26,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.auth.models import Account
-from app.modules.events.models import Event, EventSession
+from app.models.account import Account
+from app.models.event import Event, EventSession
 
 
 class RowMissing(LookupError):

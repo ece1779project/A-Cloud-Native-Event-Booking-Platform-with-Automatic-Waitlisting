@@ -4,14 +4,15 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from sqlalchemy import text, update
+from sqlalchemy import func, text, update
 from sqlalchemy.exc import DBAPIError
 
-from app.infra.db import CHECK_VIOLATION, UNIQUE_VIOLATION, sqlstate
-from app.modules.audit.models import ManagementAction
-from app.modules.booking.models import Participation, ParticipationChange
-from app.modules.events.models import EventSession
-from tests.db.factories import make_account, make_held, make_scope, make_waiting
+from app.db.engine import CHECK_VIOLATION, UNIQUE_VIOLATION, sqlstate
+from app.models.auth_session import AuthSession
+from app.models.event import EventSession
+from app.models.management_action import ManagementAction
+from app.models.participation import Participation, ParticipationChange
+from tests.factories import make_account, make_held, make_scope, make_waiting
 
 
 async def _expect_sqlstate(session_factory, code: str, action) -> None:
@@ -271,3 +272,78 @@ async def test_schedule_freezes_after_any_participation(session_factory):
         await db.execute(
             update(EventSession).where(EventSession.id == session.id).values(capacity=5)
         )
+
+
+# --- auth_sessions (DATABASE_DESIGN 2.5) --------------------------------------
+
+
+async def _make_auth_session(db, account, *, token: bytes = b"t" * 32):
+    row = AuthSession(
+        account_id=account.id,
+        family_id=uuid.uuid4(),
+        refresh_token_hash=token,
+        csrf_token_hash=b"c" * 32,
+        expires_at=datetime.now(UTC) + timedelta(days=7),
+    )
+    db.add(row)
+    await db.flush()
+    return row
+
+
+async def test_auth_session_refresh_token_is_unique(session_factory):
+    async with session_factory.begin() as db:
+        account = await make_account(db)
+        await _make_auth_session(db, account)
+
+    async def dup(db):
+        await _make_auth_session(db, account)
+
+    await _expect_sqlstate(session_factory, UNIQUE_VIOLATION, dup)
+
+
+async def test_auth_session_revocation_needs_reason(session_factory):
+    async with session_factory.begin() as db:
+        account = await make_account(db)
+        row = await _make_auth_session(db, account)
+
+    async def revoke_without_reason(db):
+        await db.execute(
+            update(AuthSession)
+            .where(AuthSession.id == row.id)
+            .values(revoked_at=datetime.now(UTC))
+        )
+
+    await _expect_sqlstate(session_factory, CHECK_VIOLATION, revoke_without_reason)
+
+
+async def test_auth_session_rotation_and_revocation_stamp_once(session_factory):
+    async with session_factory.begin() as db:
+        account = await make_account(db)
+        row = await _make_auth_session(db, account)
+
+    # Stamping rotation and revocation once is allowed.
+    async with session_factory.begin() as db:
+        await db.execute(
+            update(AuthSession)
+            .where(AuthSession.id == row.id)
+            .values(
+                rotated_at=func.now(),
+                last_used_at=func.now(),
+                revoked_at=func.now(),
+                revoke_reason="LOGOUT",
+            )
+        )
+
+    for change in (
+        {"rotated_at": func.now() + timedelta(seconds=1)},
+        {"revoke_reason": "REUSE_DETECTED"},
+        {"expires_at": AuthSession.expires_at + timedelta(days=1)},
+        {"refresh_token_hash": b"x" * 32},
+    ):
+
+        async def mutate(db, change=change):
+            await db.execute(
+                update(AuthSession).where(AuthSession.id == row.id).values(**change)
+            )
+
+        await _expect_sqlstate(session_factory, CHECK_VIOLATION, mutate)

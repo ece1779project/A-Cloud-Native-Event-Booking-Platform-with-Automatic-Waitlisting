@@ -3,7 +3,7 @@ import asyncio
 from fastapi import APIRouter, Request, Response
 from sqlalchemy import text
 
-router = APIRouter(prefix="/healthz", tags=["health"])
+router = APIRouter(prefix="/health", tags=["health"])
 
 
 @router.get("/live")

@@ -9,6 +9,9 @@ Database-level guards for rules a row check cannot express
   transitions in Section 3, and never leaves a terminal state.
 * A session keeps its event, and its schedule and display zone freeze once
   any participation (including a terminal one) exists.
+* An auth_sessions row is only ever stamped (DATABASE_DESIGN 2.5): its token,
+  family, CSRF digest and absolute expiry never change, and rotation and
+  revocation are set at most once.
 
 Autogenerate does not detect triggers; edit this revision by hand.
 
@@ -112,6 +115,32 @@ END
 $$;
 """
 
+GUARD_AUTH_SESSION_UPDATE = """
+CREATE FUNCTION guard_auth_session_update() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+    IF (NEW.account_id, NEW.family_id, NEW.refresh_token_hash, NEW.csrf_token_hash,
+        NEW.created_at, NEW.expires_at, NEW.user_agent_hash)
+       IS DISTINCT FROM
+       (OLD.account_id, OLD.family_id, OLD.refresh_token_hash, OLD.csrf_token_hash,
+        OLD.created_at, OLD.expires_at, OLD.user_agent_hash) THEN
+        RAISE EXCEPTION 'auth session % identity fields are immutable', OLD.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    IF (OLD.rotated_at IS NOT NULL AND NEW.rotated_at IS DISTINCT FROM OLD.rotated_at)
+       OR (OLD.revoked_at IS NOT NULL
+           AND (NEW.revoked_at, NEW.revoke_reason)
+               IS DISTINCT FROM (OLD.revoked_at, OLD.revoke_reason)) THEN
+        RAISE EXCEPTION 'auth session % rotation or revocation already stamped', OLD.id
+            USING ERRCODE = 'check_violation';
+    END IF;
+
+    RETURN NEW;
+END
+$$;
+"""
+
 
 def upgrade() -> None:
     op.execute(FORBID_HISTORY_MUTATION)
@@ -136,8 +165,17 @@ def upgrade() -> None:
         "FOR EACH ROW EXECUTE FUNCTION guard_event_session_update()"
     )
 
+    op.execute(GUARD_AUTH_SESSION_UPDATE)
+    op.execute(
+        "CREATE TRIGGER trg_auth_sessions_guard_update "
+        "BEFORE UPDATE ON auth_sessions "
+        "FOR EACH ROW EXECUTE FUNCTION guard_auth_session_update()"
+    )
+
 
 def downgrade() -> None:
+    op.execute("DROP TRIGGER trg_auth_sessions_guard_update ON auth_sessions")
+    op.execute("DROP FUNCTION guard_auth_session_update()")
     op.execute("DROP TRIGGER trg_event_sessions_guard_update ON event_sessions")
     op.execute("DROP FUNCTION guard_event_session_update()")
     op.execute("DROP TRIGGER trg_participations_guard_update ON participations")

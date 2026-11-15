@@ -5,6 +5,6 @@ from app.main import app
 
 def test_live_returns_ok():
     client = TestClient(app)
-    response = client.get("/healthz/live")
+    response = client.get("/health/live")
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}

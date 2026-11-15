@@ -5,9 +5,9 @@ from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.modules.auth.models import Account, Role
-from app.modules.booking.models import Participation, ParticipationState
-from app.modules.events.models import Event, EventSession, PublicationStatus
+from app.models.account import Account, Role
+from app.models.event import Event, EventSession, PublicationStatus
+from app.models.participation import Participation, ParticipationState
 
 
 async def make_account(

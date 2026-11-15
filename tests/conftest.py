@@ -1,4 +1,4 @@
-"""PostgreSQL integration-test fixtures.
+"""Shared PostgreSQL fixtures for tests/integration and tests/concurrency.
 
 Set TEST_DATABASE_URL to a disposable database whose name contains "test", e.g.
 
@@ -6,11 +6,11 @@ Set TEST_DATABASE_URL to a disposable database whose name contains "test", e.g.
         -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=booking_test \\
         postgres:18
     TEST_DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1:55432/booking_test \\
-        uv run pytest tests/db
+        uv run pytest
 
 The public schema is dropped and rebuilt with `alembic upgrade head` once per
-run, and every table is truncated before each test. Without the variable these
-tests are skipped.
+run, and every table is truncated before each test. Without the variable the
+database tests are skipped; tests/unit still runs.
 """
 
 import asyncio
@@ -25,11 +25,11 @@ from sqlalchemy import make_url, text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import Settings
-from app.infra.db import create_engine, create_session_factory
+from app.db.engine import create_engine, create_session_factory
 
-ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(__file__).resolve().parents[1]
 TABLES = (
-    "accounts, events, event_sessions, participations, "
+    "accounts, auth_sessions, events, event_sessions, participations, "
     "participation_changes, request_results, management_actions"
 )
 

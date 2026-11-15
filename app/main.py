@@ -2,10 +2,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app.api.routes import health
+from app.api import health
 from app.core.config import get_settings
-from app.infra.db import create_engine, create_session_factory
-from app.infra.redis import create_redis
+from app.core.redis import create_redis
+from app.db.engine import create_engine, create_session_factory
 
 
 @asynccontextmanager

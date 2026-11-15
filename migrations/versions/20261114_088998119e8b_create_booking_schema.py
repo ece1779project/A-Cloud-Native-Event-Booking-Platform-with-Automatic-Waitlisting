@@ -35,6 +35,30 @@ def upgrade() -> None:
     sa.PrimaryKeyConstraint('id', name=op.f('pk_accounts'))
     )
     op.create_index('uq_accounts_email_lower', 'accounts', [sa.literal_column('lower(email)')], unique=True)
+    # auth_sessions: DATABASE_DESIGN 2.5; TECHNICAL_DESIGN 6.2 requires it in the first revision.
+    op.create_table('auth_sessions',
+    sa.Column('id', sa.Uuid(), nullable=False),
+    sa.Column('account_id', sa.Uuid(), nullable=False),
+    sa.Column('family_id', sa.Uuid(), nullable=False),
+    sa.Column('refresh_token_hash', sa.LargeBinary(), nullable=False),
+    sa.Column('csrf_token_hash', sa.LargeBinary(), nullable=False),
+    sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('last_used_at', sa.DateTime(timezone=True), server_default=sa.text('now()'), nullable=False),
+    sa.Column('expires_at', sa.DateTime(timezone=True), nullable=False),
+    sa.Column('rotated_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('revoked_at', sa.DateTime(timezone=True), nullable=True),
+    sa.Column('revoke_reason', sa.Text(), nullable=True),
+    sa.Column('user_agent_hash', sa.LargeBinary(), nullable=True),
+    sa.Column('last_ip_prefix', sa.Text(), nullable=True),
+    sa.CheckConstraint("revoke_reason IS NULL OR revoke_reason IN ('LOGOUT', 'REUSE_DETECTED', 'ACCOUNT_DISABLED')", name=op.f('ck_auth_sessions_revoke_reason_valid')),
+    sa.CheckConstraint('(revoked_at IS NULL) = (revoke_reason IS NULL)', name=op.f('ck_auth_sessions_revoked_pair')),
+    sa.CheckConstraint('expires_at > created_at', name=op.f('ck_auth_sessions_expires_after_created')),
+    sa.ForeignKeyConstraint(['account_id'], ['accounts.id'], name=op.f('fk_auth_sessions_account_id_accounts'), ondelete='RESTRICT'),
+    sa.PrimaryKeyConstraint('id', name=op.f('pk_auth_sessions')),
+    sa.UniqueConstraint('refresh_token_hash', name=op.f('uq_auth_sessions_refresh_token_hash'))
+    )
+    op.create_index('ix_auth_sessions_account_id_expires_at', 'auth_sessions', ['account_id', 'expires_at'], unique=False)
+    op.create_index('ix_auth_sessions_family_id', 'auth_sessions', ['family_id'], unique=False)
     op.create_table('events',
     sa.Column('id', sa.Uuid(), nullable=False),
     sa.Column('organizer_id', sa.Uuid(), nullable=False),
@@ -190,6 +214,9 @@ def downgrade() -> None:
     op.drop_table('event_sessions')
     op.drop_index(op.f('ix_events_organizer_id'), table_name='events')
     op.drop_table('events')
+    op.drop_index('ix_auth_sessions_family_id', table_name='auth_sessions')
+    op.drop_index('ix_auth_sessions_account_id_expires_at', table_name='auth_sessions')
+    op.drop_table('auth_sessions')
     op.drop_index('uq_accounts_email_lower', table_name='accounts')
     op.drop_table('accounts')
     # ### end Alembic commands ###
