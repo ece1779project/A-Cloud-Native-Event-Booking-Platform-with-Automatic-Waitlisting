@@ -244,7 +244,7 @@ The validity settings affect new allocations only; they never rewrite an existin
 
 ### 6.2 Authentication persistence addendum
 
-Authentication requires one additional table not yet present in the database design:
+Authentication requires one additional table. Its columns, constraints, and indexes are specified in Section 2.5 of `DATABASE_DESIGN.md` (design version 1.2); the summary below explains its behavior:
 
 `auth_sessions`
 
@@ -259,7 +259,7 @@ Authentication requires one additional table not yet present in the database des
 
 Indexes cover `(account_id, expires_at)` and unexpired token lookup. Refresh rotation locks the presented row, marks it rotated, and inserts its successor in one transaction. Every successor keeps the family's original absolute expiry and CSRF digest; rotation does not extend the login lifetime. A second concurrent refresh received within a five-second grace window returns `409 REFRESH_ALREADY_ROTATED` without revoking the family. Reuse after that window is treated as theft and revokes the family. Disabling an account revokes its refresh sessions in the same management transaction.
 
-This addendum must be incorporated into the first Alembic revision and the next database-design revision.
+This table must be included in the first Alembic revision.
 
 ### 6.3 Time and versions
 
@@ -639,6 +639,82 @@ Public messages contain no attendee identifiers. Private messages identify only 
 
 Messages may be duplicated, dropped, or received out of order. A client ignores an event whose version is lower than the newest version it has applied. A version gap triggers an immediate REST refresh.
 
+The remaining three invalidation types have these shapes.
+
+Management event, sent on a management channel:
+
+```json
+{
+  "type": "management.changed",
+  "event_id": "uuid",
+  "sessions": [
+    {"session_id": "uuid", "version": 13}
+  ],
+  "reason": "roster_changed",
+  "occurred_at": "2026-11-14T22:00:01Z"
+}
+```
+
+`sessions` lists every session whose version the commit changed. It is empty when only event-level fields changed.
+
+Account control event, sent to every connection of the affected account regardless of its subscriptions:
+
+```json
+{
+  "type": "auth.revoked",
+  "reason": "account_disabled",
+  "occurred_at": "2026-11-14T22:00:01Z"
+}
+```
+
+Gateway resynchronization event, created by the gateway and never published through Redis:
+
+```json
+{
+  "type": "system.resync_required",
+  "reason": "redis_reconnected",
+  "occurred_at": "2026-11-14T22:00:01Z"
+}
+```
+
+Every `reason` is one of the values below. A reason describes why the message was sent; it never carries the resulting state, which the client reads through REST. Section 10.5 maps each committed operation to its messages and reasons.
+
+| Type | `reason` values |
+| --- | --- |
+| `session.changed` | `participation_changed`, `capacity_changed`, `session_published`, `session_cancelled`, `event_cancelled`, `registration_closed` |
+| `participation.changed` | `hold_created`, `waitlist_joined`, `offer_created`, `confirmed`, `cancelled`, `expired` |
+| `management.changed` | `roster_changed`, `session_updated`, `event_updated` |
+| `auth.revoked` | `account_disabled` |
+| `system.resync_required` | `redis_reconnected` |
+
+A client treats an unknown `reason` on a known type as a plain refresh trigger and ignores an unknown `type`, so a later release can add values without breaking older browsers. `participation.changed` uses the six reasons above and exposes no terminal reason code such as `HOLD_EXPIRED`; that code is part of the REST resource.
+
+The gateway also sends two control messages that are not invalidations and carry no version:
+
+```json
+{
+  "type": "connection.ready",
+  "connection_id": "uuid",
+  "account_id": "uuid",
+  "heartbeat_interval_seconds": 25
+}
+```
+
+`account_id` is `null` on an anonymous connection.
+
+```json
+{
+  "type": "subscription.ack",
+  "request_id": "uuid",
+  "accepted": ["session:uuid"],
+  "rejected": [
+    {"channel": "event:uuid:management", "code": "FORBIDDEN"}
+  ]
+}
+```
+
+`request_id` echoes the client's `subscribe` or `unsubscribe` message. A rejected channel carries `RESOURCE_NOT_FOUND` for an unknown or unpublished session, `FORBIDDEN` for a management channel the account does not currently own or administer, or `INVALID_CHANNEL` for a malformed name. These rejections leave the connection open. A request for a channel outside the scope of the connection's ticket, such as `me:participations` on an anonymous connection, closes the connection with `4403` as Section 10.2 describes.
+
 ### 10.2 Connection and subscription protocol
 
 After upgrade, the gateway sends `connection.ready` with the connection ID, authenticated account ID when present, and heartbeat interval. Clients send:
@@ -647,7 +723,7 @@ After upgrade, the gateway sends `connection.ready` with the connection ID, auth
 {"type":"subscribe","request_id":"uuid","channels":["session:uuid","me:participations"]}
 ```
 
-The gateway replies with `subscription.ack` listing accepted and rejected channels. `unsubscribe` uses the same shape. Anonymous sockets may subscribe only to published `session:{id}` channels. Authenticated sockets may also use `me:participations`; organizer channels are accepted only after current ownership or administrator checks. A connection is limited to 50 public session channels and one private account scope.
+The gateway replies with `subscription.ack` listing accepted and rejected channels. `unsubscribe` uses the same shape. Anonymous sockets may subscribe only to published `session:{id}` channels. Authenticated sockets may also use `me:participations`; the management channel `event:{event_id}:management` is accepted only after current ownership or administrator checks. A connection is limited to 50 public session channels and one private account scope.
 
 The gateway sends a WebSocket ping every 25 seconds and closes a connection that does not pong within 10 seconds. It closes expired authentication with code `4401`, unauthorized scope with `4403`, policy or subscription-limit violations with `4408`, and transient server failure with `1011`. Clients reconnect with capped exponential backoff and recreate subscriptions from current page state.
 
@@ -685,6 +761,77 @@ The UI:
 - Polls relevant state every 10 seconds while disconnected.
 - Stops fallback polling after reconnect but reconciles every 60 seconds while connected.
 - Fetches authoritative state on page entry, reconnect, version gap, and uncertain command outcome.
+
+### 10.5 Redis names and publication matrix
+
+The API, the workers, and the gateway are separate processes that meet only through Redis names and message bodies. This section fixes both. A name or message that is not listed here must be added to this section in the same change that introduces it.
+
+**Keys**
+
+Every name starts with `seatflow:v1:`. A change that alters the meaning or format of a value uses a new version prefix, so old and new replicas never read each other's data during a rollout.
+
+| Key | Redis type | Written by | Read by | Expiry | Value |
+| --- | --- | --- | --- | --- | --- |
+| `seatflow:v1:rl:write:{account_id}:{window}` | String counter | API | API | 120 seconds | Registration writes by that account in the window. |
+| `seatflow:v1:rl:login:{ip}:{window}` | String counter | API | API | 120 seconds | Login attempts from that normalized address in the window. |
+| `seatflow:v1:ws:ticket:{digest}` | String | API | WebSocket gateway | 30 seconds | JSON object: `account_id` (or `null`), `access_expires_at`, and `scopes`. |
+
+- `{window}` is the Unix time in seconds divided by 60 and rounded down. Rate limiting is a fixed one-minute window: the API increments the counter, sets the expiry when the counter is new, and rejects the request when the count exceeds the configured limit. `Retry-After` is the number of seconds left in the window. A fixed window can admit up to twice the limit across a window boundary; this is accepted because the limit protects capacity and is not a correctness rule. The in-process fallback used during Redis loss applies the same windows.
+- `{ip}` is the normalized address text from Section 9.5. Keys are built and never parsed, so the colons in an IPv6 address are harmless.
+- `{digest}` is the lowercase hexadecimal SHA-256 digest of the ticket. The API writes the key only if it does not exist. The gateway reads and deletes it in one atomic command, which makes the ticket single-use across gateway replicas.
+
+**Pub/Sub channels**
+
+| Redis channel | Published by | Message types | Delivered to WebSocket subscribers of |
+| --- | --- | --- | --- |
+| `seatflow:v1:ps:session:{session_id}` | API, workers | `session.changed` | `session:{session_id}` |
+| `seatflow:v1:ps:account:{account_id}` | API, workers | `participation.changed`, `auth.revoked` | `me:participations` on connections authenticated as that account. `auth.revoked` reaches all of that account's connections. |
+| `seatflow:v1:ps:event:{event_id}:management` | API, workers | `management.changed` | `event:{event_id}:management` |
+
+- The published body is the UTF-8 JSON message from Section 10.1 with no additional envelope. The gateway forwards it unchanged after the delivery checks in Section 10.2.
+- The gateway routes by the Redis channel name and never by fields inside the body. The account that receives a private message is therefore fixed by the publisher's choice of channel.
+- Each gateway replica holds one pattern subscription to `seatflow:v1:ps:*` and filters in memory. This removes the race between a browser subscribing and the gateway subscribing in Redis. Per-channel subscriptions replace it only if load tests show the fan-out cost matters.
+- `connection.ready`, `subscription.ack`, and `system.resync_required` originate in the gateway and are never published in Redis.
+
+**Publication matrix**
+
+The process that commits a transaction publishes its messages after the commit, whether that process is the API or a worker. The reason depends on the transition and not on the process.
+
+- Every committed transaction that increments a session's version publishes exactly one `session.changed` carrying the new version, with the reason of the operation that started the transaction. This is a superset of the public rule in Section 10.3: a confirmation changes neither availability nor queue count but still publishes, so that versions seen by a subscriber are contiguous and a gap always means a lost message.
+- The same transaction publishes one `participation.changed` for each participation whose state it changed, on the owner's account channel.
+- The same transaction publishes one `management.changed` on the event's management channel.
+
+| Committed operation | `session.changed` | `participation.changed` (recipient) | `management.changed` |
+| --- | --- | --- | --- |
+| Direct booking creates a hold | `participation_changed` | `hold_created` (caller) | `roster_changed` |
+| Waitlist join | `participation_changed` | `waitlist_joined` (caller) | `roster_changed` |
+| Confirmation succeeds | `participation_changed` | `confirmed` (caller) | `roster_changed` |
+| Simulated payment fails | None; no state or version changes | None | None |
+| Attendee cancels, declines, or leaves | `participation_changed` | `cancelled` (owner) | `roster_changed` |
+| Administrator cancels a participation | `participation_changed` | `cancelled` (owner) | `roster_changed` |
+| Hold or offer expires | `participation_changed` | `expired` (owner) | `roster_changed` |
+| Promotion inside any of these transactions | Covered by the transaction's one message | `offer_created` (each promoted account); `cancelled` (each waiter ended as ineligible) | Covered by the transaction's one message |
+| Registration closes | `registration_closed` | `expired` (each hold or offer owner); `cancelled` (each waiter) | `roster_changed` |
+| Capacity changes | `capacity_changed` | Promotion row applies after an increase | `session_updated` |
+| Session is published | `session_published` | None | `session_updated` |
+| Session is cancelled | `session_cancelled` | `cancelled` (each active owner) | `session_updated` |
+| Event is cancelled | `event_cancelled`, one per affected session | `cancelled` (each active owner) | `event_updated`, listing every affected session |
+| Event fields are edited | None; no session version changes | None | `event_updated` with empty `sessions` |
+| Account is disabled | None | `auth.revoked` with `account_disabled` (that account) | None |
+
+Publishing an event publishes its sessions in the same transaction, so it follows the "Session is published" row for each session and sends one `event_updated` that lists them.
+
+A waitlist position changes whenever an earlier waiter leaves or is promoted. The system does not send a private message to every later waiter. A browser showing a `WAITLISTED` participation subscribes to that session's public channel and refetches its own participation on each `session.changed`. The position itself is returned only by the authenticated REST read, which satisfies FR-09.2.
+
+Messages are published in the order public, private, then management. Each publication is independent: a failure is counted and logged as Section 10.3 describes and does not stop the remaining ones. A transaction that affects many accounts, such as an event cancellation, sends its private messages in one pipelined round trip.
+
+**Single source in code**
+
+Phase 1 implements this section once, and no other module spells out a Redis name or message body by hand:
+
+- `app/core/redis_keys.py` holds one function per key and channel in the tables above.
+- `app/schemas/realtime.py` holds one Pydantic model per message type and one enum per `reason` list in Section 10.1.
+- `tests/contract/fixtures/` holds one JSON example per message type. A contract test validates every fixture against its model and asserts the exact strings the name functions return.
 
 ## 11. Worker design and recovery
 
@@ -765,7 +912,7 @@ The complete target Compose stack contains:
 - `postgres-exporter`
 - `redis-exporter`
 
-The migration command runs explicitly before application startup. Compose health checks distinguish liveness from dependency readiness. `.env.example` lists every required variable without real credentials.
+The migration command runs explicitly before application startup. Compose health checks distinguish liveness from dependency readiness. `.env.example` lists every variable in Section 13.5 without real credentials.
 
 ### 13.2 Kubernetes
 
@@ -808,6 +955,38 @@ sum(replica_count * process_count * (pool_size + max_overflow))
 ```
 
 An initial small pool is preferred over one large pool per replica. HPA maximums cannot be raised without recalculating this budget. Actual values depend on the approved DOKS and PostgreSQL resources and must be recorded in the deployment overlay and experiment report.
+
+### 13.5 Configuration
+
+All processes read configuration from environment variables through `app/core/config.py`, which validates every value at startup and refuses to start on a missing or malformed one. `.env.example` lists exactly the variables below. Secrets come from a local `.env` file or a Kubernetes Secret and never from source control or a ConfigMap.
+
+| Variable | Default | Used by | Meaning |
+| --- | --- | --- | --- |
+| `ENVIRONMENT` | `local` | All | Deployment name written to logs and metrics: `local`, `minikube`, or `doks`. |
+| `LOG_LEVEL` | `INFO` | All | Minimum log level. |
+| `DATABASE_URL` | None; secret | API, workers, gateway, migration | `postgresql+asyncpg` URL. Compose assembles it from `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. |
+| `DB_POOL_SIZE`, `DB_MAX_OVERFLOW` | Set per overlay | API, workers, gateway | Connection pool bounds, derived from the budget in Section 13.4. |
+| `REDIS_URL` | `redis://redis:6379/0` | API, workers, gateway | Redis connection. |
+| `HOLD_VALIDITY_SECONDS` | `300` | API | Lifetime of a new direct hold (PRD FR-04). |
+| `OFFER_VALIDITY_SECONDS` | `600` | API, workers | Lifetime of a new waitlist offer (PRD FR-07). |
+| `REGISTRATION_WRITE_LIMIT_PER_MINUTE` | `30` | API | Registration writes per account per minute (PRD FR-10). |
+| `LOGIN_LIMIT_PER_MINUTE` | `10` | API | Login attempts per source address per minute (PRD FR-10). |
+| `TRUSTED_PROXY_CIDRS` | Empty | API, gateway | Proxy ranges whose forwarded client address is trusted (Section 9.5). Empty means the peer address is used. |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | API, gateway | Frontend origins allowed by CORS and by the WebSocket `Origin` check. |
+| `JWT_PRIVATE_KEY` | None; secret | API | Ed25519 key that signs access tokens. |
+| `JWT_PUBLIC_KEY` | None | API | Ed25519 key that verifies access tokens. |
+| `JWT_ISSUER`, `JWT_AUDIENCE` | `seatflow`, `seatflow-api` | API | Required `iss` and `aud` claim values. |
+| `ACCESS_TOKEN_TTL_SECONDS` | `900` | API | Access-token lifetime (Section 9.1). |
+| `REFRESH_TOKEN_TTL_SECONDS` | `604800` | API | Absolute refresh-token lifetime (Section 9.1). |
+| `WORKER_SCAN_INTERVAL_SECONDS` | `1` | Workers | Delay between scans (Section 11). |
+| `WORKER_SCAN_BATCH_SIZE` | `100` | Workers | Candidates taken per scan. The default is a starting value to be adjusted from load tests. |
+| `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` | None; password is secret | Bootstrap command | First administrator account. The application processes do not read them. |
+
+The gateway needs no signing key: it authenticates connections through Redis tickets, which carry the account ID and access-token expiry. It reads PostgreSQL only for the account-state and ownership checks in Section 10.2.
+
+Values that this design fixes are code constants and are not configurable: the lock, statement, and idle-transaction timeouts in Section 7.1, the limit of 20 offers per transaction, the 30-second ticket lifetime, the 25-second heartbeat, and the event-list page size of 20. The 10-second polling and 60-second reconciliation intervals are constants in the frontend. Changing any of them is a design change.
+
+As PRD Section 8 requires, the validity and rate-limit settings apply only to records and requests created after a process starts with the new value. They never rewrite a persisted deadline.
 
 ## 14. Observability
 
@@ -875,6 +1054,7 @@ Detailed scenarios and target values remain defined in PRD Section 2 and the acc
 - Implement SQLAlchemy models including `auth_sessions`.
 - Create and verify the first Alembic migration.
 - Freeze OpenAPI envelopes, stable codes, and WebSocket event schemas.
+- Implement the Redis names, message models, and contract fixtures listed at the end of Section 10.5, and the settings in Section 13.5.
 - Extend Compose with explicit migration and component commands.
 
 Exit condition: migrations apply to a clean database, schema invariants are tested, and contracts are reviewable.
