@@ -1,10 +1,12 @@
 # Database design specification
 
 Cloud-Native Event Booking Platform with Automatic Waitlisting  
-Design version 1.1 · 14 November 2026 · Proposed schema for PRD 1.2  
-Requirements source: [Product requirements document](PRD.md)
+Design version 1.2 · 14 November 2026 · Proposed schema for PRD 1.2  
+Requirements source: [Product requirements document](PRD.md) · Implementation design: [Technical design document](TECHNICAL_DESIGN.md)
 
 Terms follow the PRD's terminology table. "Session" always means an event session. A SQLAlchemy session is written `AsyncSession`. Attendees cancel a hold or confirmed booking, decline an offer and leave the waitlist; all three end in `CANCELLED`.
+
+Changes in 1.2: section 2.5 adds the `auth_sessions` table for refresh tokens, previously described only in Section 6.2 of the technical design.
 
 Changes in 1.1: sessions carry a `version` column; a transaction that frees a seat promotes the queue head itself; all writers share one locking entry point and lock timeouts; registration writes continue during a Redis outage; the command rules are numbered steps with a SQL sketch.
 
@@ -25,6 +27,7 @@ erDiagram
     accounts ||--o{ request_results : submits
     participations o|--o{ request_results : concerns
     accounts ||--o{ management_actions : performs
+    accounts ||--o{ auth_sessions : signs_in
 ```
 
 ## 2. Data dictionary
@@ -127,6 +130,33 @@ Append the transition under the session lock, in the transaction that writes the
 | `target_account_id`, `target_event_id`, `target_session_id`, `target_participation_id` | uuid, each nullable | FKs to accounts, events, event sessions and participations, respectively. A check on `num_nonnulls` across the four columns requires exactly one target. |
 
 The application roles can insert and read history rows. They cannot update or delete them. Management actions record account disablement, permission changes, administrative booking cancellations and organizer or administrator event cancellations. A whole-event cancellation has one management action. Its correlation ID links every affected participation transition to the actor and the stated reason. Preserve events, sessions and attempts with booking history.
+
+### 2.5 Authentication sessions (`auth_sessions`)
+
+One row is one issued refresh token. A login starts a family of rows; each refresh retires the presented row and inserts its successor in the same family. The technical design, Sections 6.2 and 9, defines the token, cookie and CSRF behavior that uses this table.
+
+| Column | PostgreSQL type | Definition |
+| --- | --- | --- |
+| `id`, `account_id` | uuid | Primary key and FK to `accounts.id`. |
+| `family_id` | uuid | Shared by every token descended from one login. The first row of a family uses a new value. |
+| `refresh_token_hash` | bytea | SHA-256 digest of the random 256-bit token. Unique. The plaintext token is never stored. |
+| `csrf_token_hash` | bytea | SHA-256 digest of the CSRF value. Copied unchanged to every successor in the family. |
+| `created_at`, `last_used_at` | timestamptz | Database time at issue and at the latest successful use. |
+| `expires_at` | timestamptz | Absolute expiry of the login. Copied unchanged to every successor, so rotation never extends it. Check `expires_at > created_at`. |
+| `rotated_at` | timestamptz, nullable | Set when a refresh replaces this token with its successor. |
+| `revoked_at`, `revoke_reason` | timestamptz, text, both nullable | Both set or both null. The reason is `LOGOUT`, `REUSE_DETECTED` or `ACCOUNT_DISABLED`. |
+| `user_agent_hash`, `last_ip_prefix` | bytea, text, both nullable | Digest of the client's user-agent string and a truncated network prefix, kept for investigation without storing raw client data. |
+
+A token is usable when `rotated_at` and `revoked_at` are both null and `expires_at` is later than the database time. The unique index on `refresh_token_hash` serves the lookup on every refresh. Index `(account_id, expires_at)` for revoking an account's logins, and `family_id` for revoking one family.
+
+Authentication transactions take no event or session locks. Each one first takes a shared lock on the account and checks that it is enabled. Refresh and logout then lock the presented token row `FOR UPDATE`:
+
+- **Login** inserts the first row of a new family.
+- **Refresh** stamps `rotated_at` and `last_used_at` on the presented row and inserts the successor, in one transaction. A second refresh of the same token within five seconds of `rotated_at` changes nothing and returns `REFRESH_ALREADY_ROTATED`. A later reuse stamps `revoked_at` with `REUSE_DETECTED` on every row of the family that is not already revoked.
+- **Logout** stamps `revoked_at` with `LOGOUT` on every row of the family that is not already revoked.
+- **Disable account** already holds the exclusive account lock from section 4. In the same transaction it stamps `revoked_at` with `ACCOUNT_DISABLED` on every unrevoked row of the account. The shared lock taken by a concurrent refresh makes that refresh either finish first, so its successor is revoked, or wait and then find the account disabled.
+
+Rows are never updated except to stamp these columns. Expired rows may be deleted by a housekeeping job; nothing depends on them after `expires_at`.
 
 ## 3. State transitions and seat accounting
 
