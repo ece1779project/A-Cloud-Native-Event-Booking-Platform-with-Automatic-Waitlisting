@@ -1,0 +1,1469 @@
+openapi: 3.1.0
+info:
+  title: SeatFlow API
+  version: 0.1.0-draft
+  description: |
+    Contract-first draft of the SeatFlow HTTP API, written from
+    TECHNICAL_DESIGN.md Section 8 and PRD.md before the routes exist.
+
+    Once the FastAPI routes are implemented, the generated document
+    (`python -m app.cli.export_openapi`) becomes the source of truth and this
+    file is used to review differences against it.
+
+    Conventions (TECHNICAL_DESIGN 8.1):
+    - JSON is `snake_case`; UUIDs are lowercase canonical strings.
+    - Timestamps are RFC 3339 UTC with an explicit `Z`.
+    - Every response carries `X-Request-ID`.
+    - Mutating authenticated business endpoints require `Idempotency-Key`.
+      Login, refresh, logout, and real-time ticket issuance are exempt.
+    - Success responses are wrapped as `{data, meta}`; errors as `{error, meta}`.
+    - Write schemas reject unknown fields (`additionalProperties: false`).
+    - Private records owned by another attendee return 404, not 403.
+      Management endpoints return 403 when the caller lacks role or ownership.
+
+    Items marked `TBD` are open team decisions.
+servers:
+  - url: /api/v1
+tags:
+  - name: Accounts
+  - name: Auth
+  - name: Events
+  - name: Sessions
+  - name: Participations
+  - name: Requests
+  - name: Admin
+  - name: Realtime
+  - name: Health
+
+security:
+  - bearerAuth: []
+
+paths:
+  # ---------------------------------------------------------------- Accounts
+  /accounts:
+    post:
+      tags: [Accounts]
+      operationId: createAccount
+      summary: Register an attendee account
+      description: |
+        Public registration always creates `ATTENDEE`. No role field is accepted.
+        Duplicate email error code is TBD (proposal: `VALIDATION_ERROR` 422 or a new `EMAIL_TAKEN` 409).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AccountCreate' }
+      responses:
+        '201':
+          description: Account created.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /me:
+    get:
+      tags: [Accounts]
+      operationId: getMe
+      summary: Current account, role, and disabled status
+      responses:
+        '200':
+          description: The authenticated account.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /me/participations:
+    get:
+      tags: [Participations]
+      operationId: listMyParticipations
+      summary: All of the caller's attempts
+      description: Active `HELD` and `OFFERED` records come first, ordered by deadline.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of participations. Each item carries its own session `version`.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ParticipationPageEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  # -------------------------------------------------------------------- Auth
+  /auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Verify credentials and start a session
+      description: |
+        Returns an access token and sets two cookies:
+        - `refresh_token`: `Secure; HttpOnly; SameSite=Lax; Path=/api/v1/auth`
+        - `csrf_token`: `Secure; SameSite=Lax` (readable by JS, not HttpOnly)
+
+        Exempt from `Idempotency-Key`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Logged in.
+          headers:
+            X-Request-ID: { $ref: '#/components/headers/XRequestId' }
+            Set-Cookie: { $ref: '#/components/headers/SetAuthCookies' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenEnvelope' }
+        '401':
+          description: '`INVALID_CREDENTIALS`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: '`ACCOUNT_DISABLED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      operationId: refreshToken
+      summary: Rotate the refresh token and issue a new access token
+      description: |
+        Authenticated by the `refresh_token` cookie plus the `X-CSRF-Token` header
+        (must equal the `csrf_token` cookie value). Exempt from `Idempotency-Key`.
+
+        Presenting an already-rotated token within the 5-second grace window returns
+        `409 REFRESH_ALREADY_ROTATED` (the other tab already refreshed; retry with the
+        new cookie). Presenting it after the window is treated as reuse: the whole
+        token family is revoked and `401` is returned.
+      security:
+        - refreshCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '200':
+          description: Rotated.
+          headers:
+            X-Request-ID: { $ref: '#/components/headers/XRequestId' }
+            Set-Cookie: { $ref: '#/components/headers/SetAuthCookies' }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenEnvelope' }
+        '401':
+          description: '`AUTHENTICATION_REQUIRED` or `TOKEN_EXPIRED` (missing, invalid, expired, revoked, or reused token; bad CSRF).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '403':
+          description: '`ACCOUNT_DISABLED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '409':
+          description: '`REFRESH_ALREADY_ROTATED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      operationId: logout
+      summary: Revoke the current refresh session and clear cookies
+      description: Requires `X-CSRF-Token`. Idempotent by nature; exempt from `Idempotency-Key`.
+      security:
+        - refreshCookie: []
+      parameters:
+        - $ref: '#/components/parameters/CsrfToken'
+      responses:
+        '204':
+          description: Logged out; both cookies cleared.
+          headers:
+            X-Request-ID: { $ref: '#/components/headers/XRequestId' }
+            Set-Cookie: { $ref: '#/components/headers/SetAuthCookies' }
+        '401':
+          description: '`AUTHENTICATION_REQUIRED` (bad CSRF).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  # ------------------------------------------------------------------ Events
+  /events:
+    get:
+      tags: [Events]
+      operationId: listEvents
+      summary: Published events
+      description: |
+        Sorted by the nearest upcoming published session start, then event ID.
+        Events without an upcoming session appear last.
+      security: [{}, { bearerAuth: [] }]
+      parameters:
+        - name: q
+          in: query
+          description: Keyword matched against title, description, and location.
+          schema: { type: string, maxLength: 100 }
+        - name: open
+          in: query
+          description: Only events with a session whose registration is currently open.
+          schema: { type: boolean, default: false }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of events.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventPageEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+    post:
+      tags: [Events]
+      operationId: createEvent
+      summary: Create a draft event (organizer or admin)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventCreate' }
+      responses:
+        '201':
+          description: Draft created.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /events/{event_id}:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    get:
+      tags: [Events]
+      operationId: getEvent
+      summary: Event details with its sessions
+      description: Published events are public. Drafts are visible only to the owner and administrators (others get 404).
+      security: [{}, { bearerAuth: [] }]
+      responses:
+        '200':
+          description: The event with `sessions` populated.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Events]
+      operationId: patchEvent
+      summary: Edit title, description, or location (owner or admin)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventPatch' }
+      responses:
+        '200':
+          description: Updated.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`EVENT_CANCELLED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /events/{event_id}/publish:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    post:
+      tags: [Events]
+      operationId: publishEvent
+      summary: Publish a draft (requires at least one valid session)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+      responses:
+        '200':
+          description: Published (or already published).
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`EVENT_CANCELLED` or `INVALID_STATE_TRANSITION` (no valid session).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /events/{event_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    post:
+      tags: [Events]
+      operationId: cancelEvent
+      summary: Cancel an event and all its sessions (owner or admin)
+      description: |
+        One transaction: event and sessions marked `CANCELLED`, every active attempt
+        terminalized with `EVENT_CANCELLED`, versions incremented, one management action
+        recorded. On statement timeout nothing is applied and `503 LOCK_TIMEOUT` is returned.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelRequest' }
+      responses:
+        '200':
+          description: Cancelled (or already cancelled).
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /events/{event_id}/sessions:
+    parameters:
+      - $ref: '#/components/parameters/EventId'
+    post:
+      tags: [Sessions]
+      operationId: createSession
+      summary: Add a session to an event (owner or admin)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionCreate' }
+      responses:
+        '201':
+          description: Session created.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`EVENT_CANCELLED`.'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  # ---------------------------------------------------------------- Sessions
+  /sessions/{session_id}:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      tags: [Sessions]
+      operationId: getSession
+      summary: Session details, availability snapshot, queue count, and version
+      security: [{}, { bearerAuth: [] }]
+      responses:
+        '200':
+          description: The session. `meta.session_version` equals `data.version`.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionEnvelope' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    patch:
+      tags: [Sessions]
+      operationId: patchSession
+      summary: Edit a session (owner or admin)
+      description: |
+        - Once any participation exists, `time_zone`, registration times, and session times
+          are frozen (error code TBD; proposal `INVALID_STATE_TRANSITION`).
+        - After publication capacity may increase (waiters are promoted in the same
+          transaction) and may decrease only down to current occupancy
+          (`CAPACITY_BELOW_OCCUPIED`).
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SessionPatch' }
+      responses:
+        '200':
+          description: Updated.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: '`CAPACITY_BELOW_OCCUPIED`, `SESSION_CANCELLED`, `EVENT_CANCELLED`, `SESSION_STARTED`, or schedule-frozen (TBD).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /sessions/{session_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      tags: [Sessions]
+      operationId: cancelSession
+      summary: Cancel one session (owner or admin)
+      description: Active attempts are terminalized with `SESSION_CANCELLED` in the same transaction.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelRequest' }
+      responses:
+        '200':
+          description: Cancelled (or already cancelled).
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SessionEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /sessions/{session_id}/roster:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      tags: [Sessions]
+      operationId: getRoster
+      summary: Categorized snapshot of active participants (owner or admin)
+      description: Counts and rows come from one consistent snapshot. Waitlist positions are one-based among active `WAITLISTED` rows.
+      responses:
+        '200':
+          description: The roster.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RosterEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /sessions/{session_id}/book:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      tags: [Participations]
+      operationId: bookSession
+      summary: Hold a seat directly
+      description: |
+        Succeeds only when a seat is free and nobody is queued.
+        If the caller already has an active attempt, it is returned unchanged with
+        `200 EXISTING_ACTIVE_PARTICIPATION`.
+        If the session is full or anyone is queued, returns `409 WAITLIST_REQUIRED`
+        with availability in `error.details`; no capacity is consumed.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyBody' }
+      responses:
+        '201':
+          description: '`HELD` — new hold with an absolute `deadline_at`.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandEnvelope' }
+        '200':
+          description: '`EXISTING_ACTIVE_PARTICIPATION`, or an idempotent replay.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/BookingConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /sessions/{session_id}/waitlist:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    post:
+      tags: [Participations]
+      operationId: joinWaitlist
+      summary: Join the FIFO waitlist
+      description: |
+        Allowed only when the session is full or someone is already queued; otherwise
+        returns `409 DIRECT_BOOKING_AVAILABLE` and nothing is created.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyBody' }
+      responses:
+        '201':
+          description: '`WAITLISTED` — includes `queue_position`.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandEnvelope' }
+        '200':
+          description: '`EXISTING_ACTIVE_PARTICIPATION`, or an idempotent replay.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/BookingConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /sessions/{session_id}/my-participation:
+    parameters:
+      - $ref: '#/components/parameters/SessionId'
+    get:
+      tags: [Participations]
+      operationId: getMyParticipation
+      summary: The caller's attempt for this session
+      description: The active attempt if one exists; otherwise the latest terminal attempt with `historical = true`.
+      responses:
+        '200':
+          description: The participation.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ParticipationEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------- Participations
+  /participations/{participation_id}:
+    parameters:
+      - $ref: '#/components/parameters/ParticipationId'
+    get:
+      tags: [Participations]
+      operationId: getParticipation
+      summary: One of the caller's participations
+      responses:
+        '200':
+          description: The participation.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ParticipationEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /participations/{participation_id}/confirm:
+    parameters:
+      - $ref: '#/components/parameters/ParticipationId'
+    post:
+      tags: [Participations]
+      operationId: confirmParticipation
+      summary: Confirm a HELD or OFFERED seat with a simulated payment
+      description: |
+        - `success` → `200 CONFIRMED`.
+        - `failure` → `200 PAYMENT_SIMULATION_FAILED`; state and deadline are unchanged.
+        - Deadline passed → the attempt is expired, the seat is offered to the next
+          waiter (committed), then `409 PARTICIPATION_EXPIRED` is returned.
+        No card or bank data is accepted.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfirmRequest' }
+      responses:
+        '200':
+          description: '`CONFIRMED` or `PAYMENT_SIMULATION_FAILED`, or a repeated command.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /participations/{participation_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ParticipationId'
+    post:
+      tags: [Participations]
+      operationId: cancelParticipation
+      summary: Attendee cancels a HELD or CONFIRMED seat
+      description: The released seat is offered to the next waiter in the same transaction. No free-text reason.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyBody' }
+      responses:
+        '200':
+          description: '`CANCELLED`, or a repeated command.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /participations/{participation_id}/decline:
+    parameters:
+      - $ref: '#/components/parameters/ParticipationId'
+    post:
+      tags: [Participations]
+      operationId: declineOffer
+      summary: Decline an OFFERED seat
+      description: Ends with `OFFER_DECLINED`; the seat goes to the next waiter.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyBody' }
+      responses:
+        '200':
+          description: '`CANCELLED` (reason `OFFER_DECLINED`), or a repeated command.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /participations/{participation_id}/leave:
+    parameters:
+      - $ref: '#/components/parameters/ParticipationId'
+    post:
+      tags: [Participations]
+      operationId: leaveWaitlist
+      summary: Leave the waitlist
+      description: Ends a `WAITLISTED` attempt with `WITHDRAWN`. No seat is released.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EmptyBody' }
+      responses:
+        '200':
+          description: '`CANCELLED` (reason `WITHDRAWN`), or a repeated command.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  # ---------------------------------------------------------------- Requests
+  /requests/{request_id}:
+    parameters:
+      - name: request_id
+        in: path
+        required: true
+        description: The `Idempotency-Key` the caller sent with the original command.
+        schema: { type: string, format: uuid }
+    get:
+      tags: [Requests]
+      operationId: getRequestResult
+      summary: Retrieve the caller's stored command outcome
+      description: |
+        Used after a timeout ("Checking result"). Returns the original status code and
+        body exactly as first produced. 404 if the command never committed, failed
+        without consuming the key, or belongs to another account.
+      responses:
+        '200':
+          description: Replay of the stored outcome. The real status may also be 201 or 409, mirroring the original response.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/CommandEnvelope'
+                  - $ref: '#/components/schemas/ErrorEnvelope'
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ------------------------------------------------------------------- Admin
+  /admin/accounts:
+    get:
+      tags: [Admin]
+      operationId: adminListAccounts
+      summary: List accounts (admin only)
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of accounts.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountPageEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/accounts/{account_id}:
+    parameters:
+      - name: account_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [Admin]
+      operationId: adminPatchAccount
+      summary: Change role or disabled status with an audit reason (admin only)
+      description: Disabling revokes all refresh sessions of the account. The change and audit record commit together.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AdminAccountPatch' }
+      responses:
+        '200':
+          description: Updated.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AccountEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /admin/participations/{participation_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ParticipationId'
+    post:
+      tags: [Admin]
+      operationId: adminCancelParticipation
+      summary: Administrator cancels any active participation
+      description: Ends with `ADMIN_CANCELLED`, records a management action, and promotes waiters if a seat is released.
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CancelRequest' }
+      responses:
+        '200':
+          description: '`CANCELLED`, or a repeated command.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CommandEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/StateConflict' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  # ---------------------------------------------------------------- Realtime
+  /realtime/tickets:
+    post:
+      tags: [Realtime]
+      operationId: createRealtimeTicket
+      summary: Issue a single-use WebSocket connection ticket (30 s)
+      description: |
+        Anonymous callers get public scope only; authenticated callers may also get
+        own-participation and authorized management scopes. The browser then offers
+        `seatflow.v1` and `seatflow.ticket.<ticket>` in `Sec-WebSocket-Protocol`.
+        Exempt from `Idempotency-Key`. Owned by the real-time workstream; response shape TBD.
+      security: [{}, { bearerAuth: [] }]
+      responses:
+        '201':
+          description: Ticket issued.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TicketEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT (EdDSA)
+    refreshCookie:
+      type: apiKey
+      in: cookie
+      name: refresh_token
+
+  headers:
+    XRequestId:
+      description: Request ID; echoes a safe client-supplied value or a server-generated one.
+      schema: { type: string }
+    SetAuthCookies:
+      description: '`refresh_token` (HttpOnly, Path=/api/v1/auth) and `csrf_token` (not HttpOnly). Cleared on logout.'
+      schema: { type: string }
+    RetryAfter:
+      description: Seconds to wait before retrying.
+      schema: { type: integer }
+
+  parameters:
+    EventId:
+      name: event_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    SessionId:
+      name: session_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    ParticipationId:
+      name: participation_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Cursor:
+      name: cursor
+      in: query
+      description: Opaque URL-safe cursor from a previous `next_cursor`. Clients must not construct it.
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: |
+        Client-generated UUID, unique per user intent and reused on retries.
+        Scoped to the account. The same key with different parameters returns
+        `409 IDEMPOTENCY_CONFLICT`. A repeat returns the stored status and body.
+      schema: { type: string, format: uuid }
+    IdempotencyKeyTBD:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: TBD whether management endpoints require it. Shown as optional until the team decides.
+      schema: { type: string, format: uuid }
+    CsrfToken:
+      name: X-CSRF-Token
+      in: header
+      required: true
+      description: Must equal the `csrf_token` cookie value.
+      schema: { type: string }
+
+  responses:
+    ValidationError:
+      description: '`VALIDATION_ERROR` — `details.errors` lists field problems.'
+      headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unauthenticated:
+      description: '`AUTHENTICATION_REQUIRED` or `TOKEN_EXPIRED`.'
+      headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Forbidden:
+      description: '`FORBIDDEN` (role or ownership) or `ACCOUNT_DISABLED`.'
+      headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    NotFound:
+      description: '`RESOURCE_NOT_FOUND` — also returned for another attendee''s private record or a draft the caller cannot see.'
+      headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    BookingConflict:
+      description: |
+        `WAITLIST_REQUIRED`, `DIRECT_BOOKING_AVAILABLE` (both carry `details.availability`
+        and `meta.session_version`), `REGISTRATION_NOT_OPEN`, `REGISTRATION_CLOSED`,
+        `SESSION_CANCELLED`, `EVENT_CANCELLED`, `SESSION_STARTED`, or `IDEMPOTENCY_CONFLICT`.
+      headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+          example:
+            error:
+              code: WAITLIST_REQUIRED
+              message: No seat can be booked directly while the session is full or queued.
+              retryable: false
+              details:
+                availability: { capacity: 50, occupied_count: 50, available_count: 0, waitlist_count: 3 }
+            meta:
+              request_id: 0193b0a2-7c1e-7d2a-9f3e-2b5c1a4d6e7f
+              server_time: '2026-11-14T22:00:00Z'
+              session_version: 12
+    StateConflict:
+      description: |
+        `PARTICIPATION_EXPIRED`, `INVALID_STATE_TRANSITION`, `REGISTRATION_CLOSED`,
+        `SESSION_CANCELLED`, `EVENT_CANCELLED`, `SESSION_STARTED`, or `IDEMPOTENCY_CONFLICT`.
+      headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    RateLimited:
+      description: '`RATE_LIMITED`.'
+      headers:
+        X-Request-ID: { $ref: '#/components/headers/XRequestId' }
+        Retry-After: { $ref: '#/components/headers/RetryAfter' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+    Unavailable:
+      description: '`LOCK_TIMEOUT`, `DATABASE_UNAVAILABLE`, or `SERVICE_UNAVAILABLE` (all `retryable: true`). Retry with the same `Idempotency-Key`.'
+      headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  schemas:
+    # ---------- enums
+    Role:
+      type: string
+      enum: [ATTENDEE, ORGANIZER, ADMIN]
+    PublicationStatus:
+      type: string
+      enum: [DRAFT, PUBLISHED, CANCELLED]
+    RegistrationStatus:
+      type: string
+      enum: [NOT_OPEN, OPEN, CLOSED]
+    ParticipationState:
+      type: string
+      enum: [HELD, WAITLISTED, OFFERED, CONFIRMED, CANCELLED, EXPIRED]
+    EndReason:
+      type: string
+      enum:
+        - USER_CANCELLED
+        - WITHDRAWN
+        - OFFER_DECLINED
+        - HOLD_EXPIRED
+        - OFFER_EXPIRED
+        - REGISTRATION_CLOSED
+        - ACCOUNT_DISABLED
+        - INELIGIBLE
+        - SESSION_CANCELLED
+        - EVENT_CANCELLED
+        - ADMIN_CANCELLED
+    ResultCode:
+      description: Business result code carried in `meta.result` of a command response.
+      type: string
+      enum:
+        - HELD
+        - WAITLISTED
+        - OFFERED
+        - CONFIRMED
+        - CANCELLED
+        - EXPIRED
+        - PAYMENT_SIMULATION_FAILED
+        - EXISTING_ACTIVE_PARTICIPATION
+    ErrorCode:
+      type: string
+      enum:
+        - VALIDATION_ERROR
+        - AUTHENTICATION_REQUIRED
+        - INVALID_CREDENTIALS
+        - TOKEN_EXPIRED
+        - FORBIDDEN
+        - ACCOUNT_DISABLED
+        - RESOURCE_NOT_FOUND
+        - IDEMPOTENCY_CONFLICT
+        - INVALID_STATE_TRANSITION
+        - REGISTRATION_NOT_OPEN
+        - REGISTRATION_CLOSED
+        - SESSION_CANCELLED
+        - EVENT_CANCELLED
+        - PARTICIPATION_EXPIRED
+        - SESSION_STARTED
+        - CAPACITY_BELOW_OCCUPIED
+        - WAITLIST_REQUIRED
+        - DIRECT_BOOKING_AVAILABLE
+        - REFRESH_ALREADY_ROTATED
+        - RATE_LIMITED
+        - LOCK_TIMEOUT
+        - DATABASE_UNAVAILABLE
+        - SERVICE_UNAVAILABLE
+
+    # ---------- envelope pieces
+    Meta:
+      type: object
+      required: [request_id, server_time]
+      properties:
+        request_id: { type: string }
+        server_time: { type: string, format: date-time }
+        session_version:
+          description: Present when the response concerns exactly one session.
+          type: [integer, 'null']
+    CommandMeta:
+      allOf:
+        - $ref: '#/components/schemas/Meta'
+        - type: object
+          required: [result]
+          properties:
+            result: { $ref: '#/components/schemas/ResultCode' }
+    ErrorBody:
+      type: object
+      required: [code, message, retryable, details]
+      properties:
+        code: { $ref: '#/components/schemas/ErrorCode' }
+        message: { type: string }
+        retryable: { type: boolean }
+        details: { type: object, additionalProperties: true }
+    ErrorEnvelope:
+      type: object
+      required: [error, meta]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorBody' }
+        meta: { $ref: '#/components/schemas/Meta' }
+
+    # ---------- accounts & auth
+    AccountCreate:
+      type: object
+      additionalProperties: false
+      required: [email, display_name, password]
+      properties:
+        email: { type: string, format: email, description: Normalized (trimmed, lowercased) for comparison. }
+        display_name: { type: string, minLength: 1, maxLength: 100 }
+        password: { type: string, minLength: 12, maxLength: 128, writeOnly: true }
+    AccountView:
+      type: object
+      required: [id, email, display_name, role, disabled, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        display_name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        disabled: { type: boolean }
+        created_at: { type: string, format: date-time }
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, writeOnly: true }
+    TokenResponse:
+      type: object
+      required: [access_token, token_type, expires_in, account]
+      properties:
+        access_token: { type: string }
+        token_type: { type: string, const: Bearer }
+        expires_in: { type: integer, description: Seconds until the access token expires. }
+        account: { $ref: '#/components/schemas/AccountView' }
+    AdminAccountPatch:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      minProperties: 2
+      description: At least one of `role` or `disabled` is required.
+      properties:
+        role: { $ref: '#/components/schemas/Role' }
+        disabled: { type: boolean }
+        reason: { type: string, minLength: 1, maxLength: 500 }
+
+    # ---------- events & sessions
+    EventCreate:
+      type: object
+      additionalProperties: false
+      required: [title, description, location]
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, minLength: 1, maxLength: 5000 }
+        location: { type: string, minLength: 1, maxLength: 300 }
+    EventPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        title: { type: string, minLength: 1, maxLength: 200 }
+        description: { type: string, minLength: 1, maxLength: 5000 }
+        location: { type: string, minLength: 1, maxLength: 300 }
+    EventView:
+      type: object
+      required: [id, organizer_id, title, description, location, status, cancelled_at, cancellation_reason, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        organizer_id: { type: string, format: uuid }
+        title: { type: string }
+        description: { type: string }
+        location: { type: string }
+        status: { $ref: '#/components/schemas/PublicationStatus' }
+        cancelled_at: { type: [string, 'null'], format: date-time }
+        cancellation_reason: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+        next_session_starts_at:
+          description: Start of the nearest upcoming published session (list view).
+          type: [string, 'null']
+          format: date-time
+        sessions:
+          description: Populated by `GET /events/{event_id}` only.
+          type: [array, 'null']
+          items: { $ref: '#/components/schemas/SessionView' }
+    SessionCreate:
+      type: object
+      additionalProperties: false
+      description: Requires `registration_opens_at < registration_closes_at <= starts_at < ends_at`. Datetimes must include an offset.
+      required: [name, time_zone, registration_opens_at, registration_closes_at, starts_at, ends_at, capacity]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        time_zone: { type: string, description: IANA zone name, e.g. America/Toronto. }
+        registration_opens_at: { type: string, format: date-time }
+        registration_closes_at: { type: string, format: date-time }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        capacity: { type: integer, minimum: 1, maximum: 100000 }
+    SessionPatch:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      description: Same fields as `SessionCreate`, all optional, subject to the freeze and capacity rules.
+      properties:
+        name: { type: string, minLength: 1, maxLength: 200 }
+        time_zone: { type: string }
+        registration_opens_at: { type: string, format: date-time }
+        registration_closes_at: { type: string, format: date-time }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        capacity: { type: integer, minimum: 1, maximum: 100000 }
+    SessionView:
+      type: object
+      required:
+        - id
+        - event_id
+        - name
+        - status
+        - time_zone
+        - registration_opens_at
+        - registration_closes_at
+        - starts_at
+        - ends_at
+        - capacity
+        - occupied_count
+        - available_count
+        - waitlist_count
+        - registration_status
+        - version
+      properties:
+        id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        name: { type: string }
+        status: { $ref: '#/components/schemas/PublicationStatus' }
+        time_zone: { type: string }
+        registration_opens_at: { type: string, format: date-time }
+        registration_closes_at: { type: string, format: date-time }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        capacity: { type: integer }
+        occupied_count: { type: integer, description: HELD + OFFERED + CONFIRMED. }
+        available_count: { type: integer }
+        waitlist_count: { type: integer }
+        registration_status: { $ref: '#/components/schemas/RegistrationStatus' }
+        version: { type: integer, description: Session version; increments on every change. }
+    CancelRequest:
+      type: object
+      additionalProperties: false
+      required: [reason]
+      properties:
+        reason: { type: string, minLength: 1, maxLength: 500 }
+    RosterEntry:
+      type: object
+      required: [participation_id, account_id, display_name, email, state]
+      properties:
+        participation_id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        display_name: { type: string }
+        email: { type: string, format: email }
+        state: { $ref: '#/components/schemas/ParticipationState' }
+        deadline_at: { type: [string, 'null'], format: date-time }
+        confirmed_at: { type: [string, 'null'], format: date-time }
+        position: { type: integer, minimum: 1, description: WAITLISTED rows only. }
+    RosterView:
+      type: object
+      required: [session_id, version, counts, held, offered, confirmed, waitlisted]
+      properties:
+        session_id: { type: string, format: uuid }
+        version: { type: integer }
+        counts:
+          type: object
+          required: [HELD, OFFERED, CONFIRMED, WAITLISTED]
+          properties:
+            HELD: { type: integer }
+            OFFERED: { type: integer }
+            CONFIRMED: { type: integer }
+            WAITLISTED: { type: integer }
+        held: { type: array, items: { $ref: '#/components/schemas/RosterEntry' } }
+        offered: { type: array, items: { $ref: '#/components/schemas/RosterEntry' } }
+        confirmed: { type: array, items: { $ref: '#/components/schemas/RosterEntry' } }
+        waitlisted: { type: array, items: { $ref: '#/components/schemas/RosterEntry' } }
+
+    # ---------- participations
+    EmptyBody:
+      type: object
+      additionalProperties: false
+      maxProperties: 0
+      description: Send `{}`.
+    ConfirmRequest:
+      type: object
+      additionalProperties: false
+      required: [simulation_result]
+      properties:
+        simulation_result: { type: string, enum: [success, failure] }
+    SessionSummary:
+      type: object
+      required: [id, event_id, event_title, name, time_zone, starts_at, ends_at, registration_closes_at, status, event_status]
+      properties:
+        id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        event_title: { type: string }
+        name: { type: string }
+        time_zone: { type: string }
+        starts_at: { type: string, format: date-time }
+        ends_at: { type: string, format: date-time }
+        registration_closes_at: { type: string, format: date-time }
+        status: { $ref: '#/components/schemas/PublicationStatus' }
+        event_status: { $ref: '#/components/schemas/PublicationStatus' }
+    ParticipationView:
+      type: object
+      required:
+        - id
+        - session_id
+        - account_id
+        - state
+        - queue_position
+        - created_at
+        - allocated_at
+        - deadline_at
+        - confirmed_at
+        - ended_at
+        - end_reason
+        - historical
+        - session
+        - version
+      properties:
+        id: { type: string, format: uuid }
+        session_id: { type: string, format: uuid }
+        account_id: { type: string, format: uuid }
+        state: { $ref: '#/components/schemas/ParticipationState' }
+        queue_position:
+          description: One-based position; non-null only while `WAITLISTED`.
+          type: [integer, 'null']
+        created_at: { type: string, format: date-time }
+        allocated_at: { type: [string, 'null'], format: date-time }
+        deadline_at:
+          description: Absolute confirmation deadline for `HELD` / `OFFERED`.
+          type: [string, 'null']
+          format: date-time
+        confirmed_at: { type: [string, 'null'], format: date-time }
+        ended_at: { type: [string, 'null'], format: date-time }
+        end_reason:
+          oneOf:
+            - $ref: '#/components/schemas/EndReason'
+            - type: 'null'
+        display_label:
+          description: '"Event cancelled" when the parent event is cancelled.'
+          type: [string, 'null']
+        historical:
+          description: True when `my-participation` returns the latest terminal attempt.
+          type: boolean
+        session: { $ref: '#/components/schemas/SessionSummary' }
+        version: { type: integer, description: Current session version. }
+
+    # ---------- realtime
+    TicketResponse:
+      type: object
+      required: [ticket, expires_in, scopes]
+      properties:
+        ticket: { type: string, description: base64url single-use ticket. }
+        expires_in: { type: integer, const: 30 }
+        scopes: { type: array, items: { type: string } }
+
+    # ---------- envelopes
+    AccountEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/AccountView' }
+        meta: { $ref: '#/components/schemas/Meta' }
+    TokenEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/TokenResponse' }
+        meta: { $ref: '#/components/schemas/Meta' }
+    EventEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/EventView' }
+        meta: { $ref: '#/components/schemas/Meta' }
+    SessionEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/SessionView' }
+        meta: { $ref: '#/components/schemas/Meta' }
+    RosterEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/RosterView' }
+        meta: { $ref: '#/components/schemas/Meta' }
+    ParticipationEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/ParticipationView' }
+        meta: { $ref: '#/components/schemas/Meta' }
+    CommandEnvelope:
+      description: Participation command result. `meta.result` carries the business result code.
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/ParticipationView' }
+        meta: { $ref: '#/components/schemas/CommandMeta' }
+      example:
+        data:
+          id: 0193b0a2-7c1e-7d2a-9f3e-000000000001
+          session_id: 0193b0a2-7c1e-7d2a-9f3e-000000000002
+          account_id: 0193b0a2-7c1e-7d2a-9f3e-000000000003
+          state: HELD
+          queue_position: null
+          created_at: '2026-11-14T22:00:00Z'
+          allocated_at: '2026-11-14T22:00:00Z'
+          deadline_at: '2026-11-14T22:10:00Z'
+          confirmed_at: null
+          ended_at: null
+          end_reason: null
+          display_label: null
+          historical: false
+          session:
+            id: 0193b0a2-7c1e-7d2a-9f3e-000000000002
+            event_id: 0193b0a2-7c1e-7d2a-9f3e-000000000004
+            event_title: Cloud Computing Workshop
+            name: Morning
+            time_zone: America/Toronto
+            starts_at: '2026-11-20T14:00:00Z'
+            ends_at: '2026-11-20T16:00:00Z'
+            registration_closes_at: '2026-11-20T12:00:00Z'
+            status: PUBLISHED
+            event_status: PUBLISHED
+          version: 13
+        meta:
+          request_id: 0193b0a2-7c1e-7d2a-9f3e-2b5c1a4d6e7f
+          server_time: '2026-11-14T22:00:00Z'
+          session_version: 13
+          result: HELD
+    TicketEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/TicketResponse' }
+        meta: { $ref: '#/components/schemas/Meta' }
+    EventPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/EventView' } }
+        next_cursor: { type: [string, 'null'] }
+    EventPageEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/EventPage' }
+        meta: { $ref: '#/components/schemas/Meta' }
+    ParticipationPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/ParticipationView' } }
+        next_cursor: { type: [string, 'null'] }
+    ParticipationPageEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/ParticipationPage' }
+        meta: { $ref: '#/components/schemas/Meta' }
+    AccountPage:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: { type: array, items: { $ref: '#/components/schemas/AccountView' } }
+        next_cursor: { type: [string, 'null'] }
+    AccountPageEnvelope:
+      type: object
+      required: [data, meta]
+      properties:
+        data: { $ref: '#/components/schemas/AccountPage' }
+        meta: { $ref: '#/components/schemas/Meta' }
