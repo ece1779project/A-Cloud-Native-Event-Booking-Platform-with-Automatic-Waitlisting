@@ -16,7 +16,7 @@ Requirement identifiers such as FR-04 and NFR-01 refer to the PRD.
 
 The following work remains to be implemented:
 
-- Database models, Alembic migrations, repositories, or transactions.
+- Business transactions built on the database layer: booking, confirmation, cancellation, promotion, and idempotency receipts.
 - Account registration, authentication, authorization, and administration.
 - Event, session, booking, confirmation, cancellation, or waitlist APIs.
 - Expiration and promotion workers.
@@ -24,7 +24,7 @@ The following work remains to be implemented:
 - WebSocket gateway and frontend.
 - Kubernetes manifests, migration jobs, monitoring, dashboards, alerts, or load tests.
 
-The package skeleton in Section 5 is in place: every module exists with a statement of its responsibility, and the API still serves only the scaffold health endpoint.
+The package skeleton in Section 5 is in place: every module exists with a statement of its responsibility. The database layer is implemented and tested: settings, the engine, the SQLAlchemy models, both Alembic revisions, the lock entry point, the participation store, and the `/health/live` and `/health/ready` endpoints. Compose runs the migration before it starts the API.
 
 The remaining sections describe planned behavior rather than completed or measured results.
 
@@ -158,7 +158,7 @@ flowchart LR
 
 ## 5. Repository structure
 
-The API, workers, and WebSocket gateway share one Python package and image. Different container commands start different process types. The backend package and the test and deployment directories exist as a skeleton: each module carries a docstring that states its responsibility and the section of this document it implements, and no business behavior is implemented yet.
+The API, workers, and WebSocket gateway share one Python package and image. Different container commands start different process types. Each module carries a docstring that states its responsibility and the section of this document it implements. Section 2 lists which modules are implemented; the others are still skeletons.
 
 ```text
 .
@@ -194,8 +194,9 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   │   └── timing.py                 # Registration window and deadline rules
 │   ├── db/
 │   │   ├── base.py                   # DeclarativeBase and naming convention
-│   │   ├── engine.py                 # Engine, session factory, timeouts
-│   │   └── locks.py                  # The only business-write lock entry point
+│   │   ├── engine.py                 # Engine, session factory, timeouts, database clock
+│   │   ├── locks.py                  # The only business-write lock entry point
+│   │   └── participation_store.py    # Participation reads and low-level writes
 │   ├── models/                       # One module per table
 │   │   ├── account.py
 │   │   ├── auth_session.py
@@ -223,7 +224,7 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   │   ├── promotion.py              # Promote steps, shared with workers
 │   │   ├── expiration.py             # Expiry and registration closure
 │   │   ├── idempotency.py            # Command receipts
-│   │   └── audit.py                  # History and management-action writers
+│   │   └── audit.py                  # Management-action writer
 │   ├── realtime/
 │   │   ├── publisher.py              # Post-commit publication (API and workers)
 │   │   ├── tickets.py                # Issue (API) and consume (gateway)
@@ -242,8 +243,8 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   └── cli/                          # One-off commands
 │       ├── bootstrap_admin.py
 │       └── export_openapi.py
-├── migrations/                       # Created by `alembic init -t async migrations`
-├── alembic.ini                       # Created by the same command
+├── migrations/                       # Alembic environment and revisions
+├── alembic.ini
 ├── frontend/                         # Created by the Vite scaffold in Phase 4
 │   ├── src/
 │   │   ├── api/
@@ -262,7 +263,8 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   ├── monitoring/                   # Prometheus, Grafana, alert rules
 │   └── scripts/
 ├── tests/
-│   ├── conftest.py
+│   ├── conftest.py                   # PostgreSQL fixtures shared by integration and concurrency
+│   ├── factories.py                  # Row builders that bypass business rules
 │   ├── unit/                         # domain, core, schema validation; no database
 │   ├── integration/                  # Services and routes against PostgreSQL and Redis
 │   ├── concurrency/                  # Races over independent connections
@@ -274,7 +276,7 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 └── pyproject.toml
 ```
 
-`migrations/`, `alembic.ini`, and `frontend/` are absent until their generators run, because both generators expect an empty target directory.
+`frontend/` is absent until the Vite scaffold runs, because that generator expects an empty target directory.
 
 ### 5.1 Process entry points
 
@@ -302,6 +304,8 @@ domain, core                              leaves; import nothing from app
 - Services own authorization-sensitive business decisions and transactions. A service is called by route handlers and by workers, knows nothing about HTTP, and never imports `app.api`, `app.workers`, or `app.realtime`.
 - A service returns its committed result together with the invalidations to publish. The caller, a route handler or a worker loop, passes them to `realtime/publisher.py` after the service returns, so publication can never run inside a transaction.
 - Models hold columns, constraints, and indexes only. Models never publish messages.
+- `db/participation_store.py` holds the participation queries and low-level writes that several services share: occupancy counts, the queue head, waitlist position, the queue number, the session version, and the history row. It makes no business decision, and its writes assume the caller already holds the session lock from `db/locks.py`.
+- PostgreSQL triggers reject an illegal state transition and any edit of history or frozen fields (`DATABASE_DESIGN.md` Section 2.6). They are a last line of defense: a service checks the rule first and returns the stable error code, so a trigger rejection that reaches a client is a bug.
 - `domain` holds the state machine and time rules as pure functions. Models, schemas, services, workers, and the gateway share its enumerations, and unit tests cover it without a database.
 - A worker scan only selects candidates. Each candidate is handled through the same service and lock entry point as an API command.
 - The gateway reads PostgreSQL only for the account-state and ownership checks in Section 10.2 and never calls a service that writes.

@@ -1,10 +1,12 @@
 # Database design specification
 
 Cloud-Native Event Booking Platform with Automatic Waitlisting  
-Design version 1.2 · 14 November 2026 · Proposed schema for PRD 1.2  
+Design version 1.3 · 16 November 2026 · Proposed schema for PRD 1.2  
 Requirements source: [Product requirements document](PRD.md) · Implementation design: [Technical design document](TECHNICAL_DESIGN.md)
 
 Terms follow the PRD's terminology table. "Session" always means an event session. A SQLAlchemy session is written `AsyncSession`. Attendees cancel a hold or confirmed booking, decline an offer and leave the waitlist; all three end in `CANCELLED`.
+
+Changes in 1.3: section 2.6 documents the database triggers that the second migration added.
 
 Changes in 1.2: section 2.5 adds the `auth_sessions` table for refresh tokens, previously described only in Section 6.2 of the technical design.
 
@@ -129,7 +131,7 @@ Append the transition under the session lock, in the transaction that writes the
 | `occurred_at`, `correlation_id` | timestamptz, uuid | Database time and identifier shared by all effects of the operation. |
 | `target_account_id`, `target_event_id`, `target_session_id`, `target_participation_id` | uuid, each nullable | FKs to accounts, events, event sessions and participations, respectively. A check on `num_nonnulls` across the four columns requires exactly one target. |
 
-The application roles can insert and read history rows. They cannot update or delete them. Management actions record account disablement, permission changes, administrative booking cancellations and organizer or administrator event cancellations. A whole-event cancellation has one management action. Its correlation ID links every affected participation transition to the actor and the stated reason. Preserve events, sessions and attempts with booking history.
+The application roles can insert and read history rows. They cannot update or delete them; a trigger enforces this for every role (section 2.6). Management actions record account disablement, permission changes, administrative booking cancellations and organizer or administrator event cancellations. A whole-event cancellation has one management action. Its correlation ID links every affected participation transition to the actor and the stated reason. Preserve events, sessions and attempts with booking history.
 
 ### 2.5 Authentication sessions (`auth_sessions`)
 
@@ -157,6 +159,23 @@ Authentication transactions take no event or session locks. Each one first takes
 - **Disable account** already holds the exclusive account lock from section 4. In the same transaction it stamps `revoked_at` with `ACCOUNT_DISABLED` on every unrevoked row of the account. The shared lock taken by a concurrent refresh makes that refresh either finish first, so its successor is revoked, or wait and then find the account disabled.
 
 Rows are never updated except to stamp these columns. Expired rows may be deleted by a housekeeping job; nothing depends on them after `expires_at`.
+
+### 2.6 Database guards (triggers)
+
+Row checks and unique indexes cannot express a rule that compares a row's old and new values. Four groups of triggers, created by the second Alembic revision, enforce those rules. They are a last line of defense behind the application's own checks: the services still validate every command and return the stable error code, so a trigger rejection that reaches a client is a bug.
+
+| Trigger | Table and event | Rejects | SQLSTATE |
+| --- | --- | --- | --- |
+| `trg_participation_changes_append_only`, `trg_management_actions_append_only` | Both history tables, before `UPDATE` or `DELETE` | Every update and delete. | `42501` |
+| `trg_participations_guard_update` | `participations`, before `UPDATE` | A change to `session_id`, `account_id`, `created_at` or `queue_seq`. Any update of a `CANCELLED` or `EXPIRED` row. A change to `allocated_at`, `deadline_at` or `confirmed_at` once set. A state change outside the transitions in section 3. | `23514` |
+| `trg_event_sessions_guard_update` | `event_sessions`, before `UPDATE` | A change to `event_id`. A change to the registration times, session times or time zone once any participation exists, including a terminal one. | `23514` |
+| `trg_auth_sessions_guard_update` | `auth_sessions`, before `UPDATE` | A change to `account_id`, `family_id`, `refresh_token_hash`, `csrf_token_hash`, `created_at`, `expires_at` or `user_agent_hash`. A second stamp of `rotated_at`, or of `revoked_at` and `revoke_reason`. | `23514` |
+
+The guards fire on updates only, so inserts are limited by the row checks alone. `last_used_at` and `last_ip_prefix` on `auth_sessions` stay editable.
+
+The transition list exists twice: in `trg_participations_guard_update` and in `app/domain/transitions.py`. An integration test reads the trigger from the database and fails when the two lists differ. A change to the state machine therefore needs a new revision that replaces the trigger function and the matching change in `transitions.py`.
+
+Alembic autogeneration and `alembic check` do not see triggers or functions. Write them by hand in a revision, and never edit a revision that has already been applied to a shared database.
 
 ## 3. State transitions and seat accounting
 
@@ -334,7 +353,7 @@ Initialize the migration environment once with `uv run alembic init -t async mig
 
 | Stage | Procedure |
 | --- | --- |
-| Author | Run `uv run alembic revision --autogenerate -m "create booking schema"`. Review constraint names, partial predicates, foreign keys, defaults and both revision directions. Write renames, data backfills and changes omitted by autogeneration explicitly. |
+| Author | Run `uv run alembic revision --autogenerate -m "create booking schema"`. Review constraint names, partial predicates, foreign keys, defaults and both revision directions. Write renames, data backfills and changes omitted by autogeneration explicitly. Triggers and functions are always written by hand (section 2.6). |
 | Verify | Apply `uv run alembic upgrade head` to a clean PostgreSQL database and to a populated copy of the preceding revision. Run `uv run alembic current`, compare with `uv run alembic heads`, run `uv run alembic check`, and exercise the booking invariants. Test reversible downgrades on a disposable copy. |
 | Deploy | Run one migration job before starting replicas that require the new revision. The migration role owns DDL. API and worker roles receive only the data privileges they need. A failed migration blocks the rollout. |
 | Change a live schema | Add compatible columns or indexes first, backfill existing rows, validate constraints and switch readers and writers. Remove obsolete fields after old replicas have drained. For a destructive change, document data recovery and the forward repair before deployment. |
