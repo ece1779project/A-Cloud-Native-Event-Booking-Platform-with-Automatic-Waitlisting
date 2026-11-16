@@ -1,4 +1,7 @@
-"""Shared PostgreSQL fixtures for tests/integration and tests/concurrency.
+"""Fixtures shared by every test layer.
+
+The PostgreSQL fixtures live here, not in tests/integration/conftest.py,
+because tests/integration and tests/concurrency both need them.
 
 Set TEST_DATABASE_URL to a disposable database whose name contains "test", e.g.
 

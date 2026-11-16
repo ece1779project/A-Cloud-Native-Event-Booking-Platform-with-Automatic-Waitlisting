@@ -1,7 +1,10 @@
+"""Table ``participations``.
+
+Design: DATABASE_DESIGN.md Section 2.3.
+"""
+
 import uuid
 from datetime import datetime
-from enum import StrEnum
-from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -9,77 +12,31 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
-    Integer,
-    LargeBinary,
-    SmallInteger,
     Text,
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
+from app.domain.enums import EndReason, ParticipationState
+from app.domain.transitions import ACTIVE_STATES
 
 
-class ParticipationState(StrEnum):
-    HELD = "HELD"
-    WAITLISTED = "WAITLISTED"
-    OFFERED = "OFFERED"
-    CONFIRMED = "CONFIRMED"
-    CANCELLED = "CANCELLED"
-    EXPIRED = "EXPIRED"
-
-
-ACTIVE_STATES = (
-    ParticipationState.HELD,
-    ParticipationState.WAITLISTED,
-    ParticipationState.OFFERED,
-    ParticipationState.CONFIRMED,
-)
-# States that occupy a seat (DATABASE_DESIGN Section 3).
-OCCUPYING_STATES = (
-    ParticipationState.HELD,
-    ParticipationState.OFFERED,
-    ParticipationState.CONFIRMED,
-)
-
-
-class TransitionReason(StrEnum):
-    BOOKED = "BOOKED"
-    ENQUEUED = "ENQUEUED"
-    PROMOTED = "PROMOTED"
-    PAYMENT_CONFIRMED = "PAYMENT_CONFIRMED"
-
-
-class EndReason(StrEnum):
-    USER_CANCELLED = "USER_CANCELLED"
-    WITHDRAWN = "WITHDRAWN"
-    OFFER_DECLINED = "OFFER_DECLINED"
-    HOLD_EXPIRED = "HOLD_EXPIRED"
-    OFFER_EXPIRED = "OFFER_EXPIRED"
-    REGISTRATION_CLOSED = "REGISTRATION_CLOSED"
-    ACCOUNT_DISABLED = "ACCOUNT_DISABLED"
-    INELIGIBLE = "INELIGIBLE"
-    SESSION_CANCELLED = "SESSION_CANCELLED"
-    EVENT_CANCELLED = "EVENT_CANCELLED"
-    ADMIN_CANCELLED = "ADMIN_CANCELLED"
-
-
-def _sql_list(values) -> str:
+def sql_list(values) -> str:
+    """Render enum values as a SQL ``IN`` list for check constraints."""
     return "(" + ", ".join(f"'{v}'" for v in values) + ")"
 
 
-_ALL_STATES = _sql_list(ParticipationState)
-_ACTIVE = _sql_list(ACTIVE_STATES)
-_END_REASONS = _sql_list(EndReason)
-_CHANGE_REASONS = _sql_list([*TransitionReason, *EndReason])
+ALL_STATES_SQL = sql_list(ParticipationState)
+_ACTIVE_SQL = sql_list(ACTIVE_STATES)
+_END_REASONS_SQL = sql_list(EndReason)
 
 
 class Participation(Base):
     __tablename__ = "participations"
     __table_args__ = (
-        CheckConstraint(f"state IN {_ALL_STATES}", name="state_valid"),
+        CheckConstraint(f"state IN {ALL_STATES_SQL}", name="state_valid"),
         CheckConstraint("queue_seq IS NULL OR queue_seq > 0", name="queue_seq_positive"),
         CheckConstraint(
             "state NOT IN ('WAITLISTED', 'OFFERED') OR queue_seq IS NOT NULL",
@@ -114,14 +71,15 @@ class Participation(Base):
             name="ended_fields",
         ),
         CheckConstraint(
-            f"end_reason IS NULL OR end_reason IN {_END_REASONS}", name="end_reason_valid"
+            f"end_reason IS NULL OR end_reason IN {_END_REASONS_SQL}",
+            name="end_reason_valid",
         ),
         Index(
             "uq_participations_active_account",
             "session_id",
             "account_id",
             unique=True,
-            postgresql_where=text(f"state IN {_ACTIVE}"),
+            postgresql_where=text(f"state IN {_ACTIVE_SQL}"),
         ),
         Index(
             "uq_participations_queue_seq",
@@ -168,54 +126,3 @@ class Participation(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     end_reason: Mapped[str | None] = mapped_column(Text)
-
-
-class ParticipationChange(Base):
-    __tablename__ = "participation_changes"
-    __table_args__ = (
-        CheckConstraint("change_no >= 1", name="change_no_positive"),
-        CheckConstraint(
-            "(change_no = 1) = (from_state IS NULL)", name="first_has_no_source"
-        ),
-        CheckConstraint(
-            f"from_state IS NULL OR from_state IN {_ALL_STATES}", name="from_state_valid"
-        ),
-        CheckConstraint(f"to_state IN {_ALL_STATES}", name="to_state_valid"),
-        CheckConstraint(f"reason_code IN {_CHANGE_REASONS}", name="reason_code_valid"),
-    )
-
-    participation_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("participations.id", ondelete="RESTRICT"), primary_key=True
-    )
-    change_no: Mapped[int] = mapped_column(Integer, primary_key=True)
-    from_state: Mapped[str | None] = mapped_column(Text)
-    to_state: Mapped[str] = mapped_column(Text)
-    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    reason_code: Mapped[str] = mapped_column(Text)
-    actor_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("accounts.id", ondelete="RESTRICT")
-    )
-    correlation_id: Mapped[uuid.UUID]
-
-
-class RequestResult(Base):
-    """Idempotency receipt for one authenticated command (DATABASE_DESIGN 2.4)."""
-
-    __tablename__ = "request_results"
-    __table_args__ = (
-        CheckConstraint("http_status BETWEEN 100 AND 599", name="http_status_range"),
-    )
-
-    account_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("accounts.id", ondelete="RESTRICT"), primary_key=True
-    )
-    request_id: Mapped[uuid.UUID] = mapped_column(primary_key=True)
-    operation: Mapped[str] = mapped_column(Text)
-    parameter_hash: Mapped[bytes] = mapped_column(LargeBinary)
-    participation_id: Mapped[uuid.UUID | None] = mapped_column(
-        ForeignKey("participations.id", ondelete="RESTRICT")
-    )
-    http_status: Mapped[int] = mapped_column(SmallInteger)
-    result_code: Mapped[str] = mapped_column(Text)
-    result_body: Mapped[dict[str, Any]] = mapped_column(JSONB)
-    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

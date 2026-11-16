@@ -1,17 +1,16 @@
+"""Table ``accounts``.
+
+Design: DATABASE_DESIGN.md Section 2.1.
+"""
+
 import uuid
 from datetime import datetime
-from enum import StrEnum
 
 from sqlalchemy import CheckConstraint, DateTime, Index, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
-
-
-class Role(StrEnum):
-    ATTENDEE = "ATTENDEE"
-    ORGANIZER = "ORGANIZER"
-    ADMIN = "ADMIN"
+from app.domain.enums import Role
 
 
 class Account(Base):

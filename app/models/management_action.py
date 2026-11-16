@@ -1,3 +1,11 @@
+"""Table ``management_actions``.
+
+Append-only audit of administrative and organizer management actions; the
+``trg_management_actions_append_only`` trigger rejects UPDATE and DELETE.
+
+Design: DATABASE_DESIGN.md Section 2.4.
+"""
+
 import uuid
 from datetime import datetime
 
@@ -8,8 +16,6 @@ from app.db.base import Base
 
 
 class ManagementAction(Base):
-    """Append-only audit of administrative and organizer management actions."""
-
     __tablename__ = "management_actions"
     __table_args__ = (
         CheckConstraint("length(btrim(action)) > 0", name="action_nonblank"),

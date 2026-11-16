@@ -1,8 +1,12 @@
-"""The single lock-acquisition entry point (DATABASE_DESIGN Section 4, TECHNICAL_DESIGN 7.1).
+"""The only business-write lock entry point.
 
-The capacity rule (occupied <= capacity) has no database constraint behind it.
-It holds only because every writer -- API and workers alike -- takes row locks
-through this module, in this order:
+Locks the event, the session and the accounts in the documented order,
+returns the locked rows and reads ``clock_timestamp()`` after the last
+blocking lock. Every API and worker write that can affect participation,
+capacity, queue order or session status goes through this module. Locking
+these rows anywhere else fails review.
+
+Order:
 
 1. the parent event: FOR SHARE for a booking command, FOR UPDATE for a
    whole-event edit or cancellation;
@@ -10,24 +14,26 @@ through this module, in this order:
 3. the accounts the command depends on, in ascending ID order: FOR SHARE for a
    permission or eligibility check, FOR UPDATE for a role or disablement change.
 
-Account-only changes use ``lock_accounts`` alone. Promotion may lock a queue
+Account-only changes use ``lock_account_scope``. Promotion locks each queue
 head's account afterwards with ``lock_queue_head_account`` (shared only, which
-cannot deadlock -- see the design's Promote section).
+cannot deadlock). Every lock re-reads the row (``populate_existing``) so
+callers never act on stale identity-map state.
 
-Every lock re-reads the row (populate_existing) so callers never act on stale
-identity-map state. Read the clock with ``app.db.engine.db_now`` only after
-these calls return. Locking rows any other way fails review.
+Design: TECHNICAL_DESIGN.md Section 7.1; DATABASE_DESIGN.md Section 4.
 """
 
 import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.engine import db_now
 from app.models.account import Account
-from app.models.event import Event, EventSession
+from app.models.event import Event
+from app.models.event_session import EventSession
 
 
 class RowMissing(LookupError):
@@ -42,6 +48,7 @@ class LockedScope:
     event: Event
     sessions: dict[uuid.UUID, EventSession]
     accounts: dict[uuid.UUID, Account]
+    now: datetime  # clock_timestamp() read after the last lock
 
     @property
     def session(self) -> EventSession:
@@ -49,6 +56,18 @@ class LockedScope:
         if len(self.sessions) != 1:
             raise ValueError(f"scope holds {len(self.sessions)} sessions, not one")
         return next(iter(self.sessions.values()))
+
+
+@dataclass(frozen=True, slots=True)
+class LockedAccounts:
+    accounts: dict[uuid.UUID, Account]
+    now: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class LockedQueueHead:
+    account: Account
+    now: datetime  # fresh time after this lock (TECHNICAL_DESIGN 7.4 step 5)
 
 
 async def lock_event_scope(
@@ -96,10 +115,12 @@ async def lock_event_scope(
             raise RowMissing("event_sessions", session_id)
         sessions[session_id] = locked
 
-    accounts = await lock_accounts(
+    accounts = await _lock_accounts(
         db, share_ids=share_account_ids, exclusive_ids=exclusive_account_ids
     )
-    return LockedScope(event=event, sessions=sessions, accounts=accounts)
+    return LockedScope(
+        event=event, sessions=sessions, accounts=accounts, now=await db_now(db)
+    )
 
 
 async def lock_session_scope(
@@ -128,14 +149,44 @@ async def lock_session_scope(
     )
 
 
-async def lock_accounts(
+async def lock_account_scope(
     db: AsyncSession,
     *,
     share_ids: Iterable[uuid.UUID] = (),
     exclusive_ids: Iterable[uuid.UUID] = (),
+) -> LockedAccounts:
+    """Account-only changes (role, disablement): no event or session locks."""
+    accounts = await _lock_accounts(db, share_ids=share_ids, exclusive_ids=exclusive_ids)
+    return LockedAccounts(accounts=accounts, now=await db_now(db))
+
+
+async def lock_queue_head_account(
+    db: AsyncSession, account_id: uuid.UUID
+) -> LockedQueueHead:
+    """Shared lock on a waitlist head's account during promotion.
+
+    This is the one sanctioned out-of-order account lock: promotion runs after
+    the caller's own locks and takes only shared account locks.
+    """
+    account = await db.scalar(
+        select(Account)
+        .where(Account.id == account_id)
+        .with_for_update(read=True)
+        .execution_options(populate_existing=True)
+    )
+    if account is None:
+        raise RowMissing("accounts", account_id)
+    return LockedQueueHead(account=account, now=await db_now(db))
+
+
+async def _lock_accounts(
+    db: AsyncSession,
+    *,
+    share_ids: Iterable[uuid.UUID],
+    exclusive_ids: Iterable[uuid.UUID],
 ) -> dict[uuid.UUID, Account]:
-    """Lock accounts in ascending ID order. An ID in both sets is locked exclusively,
-    because the mode must be chosen on first acquisition."""
+    """Lock accounts in ascending ID order. An ID in both sets is locked
+    exclusively, because the mode must be chosen on first acquisition."""
     exclusive = set(exclusive_ids)
     accounts: dict[uuid.UUID, Account] = {}
     for account_id in sorted(exclusive | set(share_ids)):
@@ -150,20 +201,3 @@ async def lock_accounts(
             raise RowMissing("accounts", account_id)
         accounts[account_id] = account
     return accounts
-
-
-async def lock_queue_head_account(db: AsyncSession, account_id: uuid.UUID) -> Account:
-    """Shared lock on a waitlist head's account during promotion.
-
-    This is the one sanctioned out-of-order account lock: promotion runs after
-    the caller's own locks and takes only shared account locks.
-    """
-    account = await db.scalar(
-        select(Account)
-        .where(Account.id == account_id)
-        .with_for_update(read=True)
-        .execution_options(populate_existing=True)
-    )
-    if account is None:
-        raise RowMissing("accounts", account_id)
-    return account

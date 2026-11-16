@@ -9,9 +9,10 @@ from sqlalchemy.exc import DBAPIError
 
 from app.db.engine import CHECK_VIOLATION, UNIQUE_VIOLATION, sqlstate
 from app.models.auth_session import AuthSession
-from app.models.event import EventSession
+from app.models.event_session import EventSession
 from app.models.management_action import ManagementAction
-from app.models.participation import Participation, ParticipationChange
+from app.models.participation import Participation
+from app.models.participation_change import ParticipationChange
 from tests.factories import make_account, make_held, make_scope, make_waiting
 
 

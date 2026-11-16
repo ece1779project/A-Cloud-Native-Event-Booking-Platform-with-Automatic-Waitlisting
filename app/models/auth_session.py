@@ -1,6 +1,15 @@
+"""Table ``auth_sessions``.
+
+One row is one issued refresh token. A login starts a family; each refresh
+retires the presented row and inserts its successor with the same
+``family_id``, ``csrf_token_hash`` and ``expires_at``. A row is usable when
+``rotated_at`` and ``revoked_at`` are null and ``expires_at`` is in the future.
+
+Design: DATABASE_DESIGN.md Section 2.5.
+"""
+
 import uuid
 from datetime import datetime
-from enum import StrEnum
 
 from sqlalchemy import (
     CheckConstraint,
@@ -16,20 +25,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 
-class RevokeReason(StrEnum):
-    LOGOUT = "LOGOUT"
-    REUSE_DETECTED = "REUSE_DETECTED"
-    ACCOUNT_DISABLED = "ACCOUNT_DISABLED"
-
-
 class AuthSession(Base):
-    """One issued refresh token (DATABASE_DESIGN 2.5, TECHNICAL_DESIGN 6.2).
-
-    A login starts a family; each refresh retires the presented row and inserts
-    its successor with the same family_id, csrf_token_hash and expires_at.
-    Usable when rotated_at and revoked_at are null and expires_at is in the future.
-    """
-
     __tablename__ = "auth_sessions"
     __table_args__ = (
         CheckConstraint("expires_at > created_at", name="expires_after_created"),

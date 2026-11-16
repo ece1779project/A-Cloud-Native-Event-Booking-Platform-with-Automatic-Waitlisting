@@ -1,3 +1,13 @@
+"""One ``AsyncEngine`` and ``async_sessionmaker`` per process, with UTC
+connections, pool bounds from settings, and the lock, statement and
+idle-in-transaction timeouts.
+
+Also the database clock (``db_now``) and SQLSTATE helpers used to map lock
+and statement timeouts to ``503 LOCK_TIMEOUT``.
+
+Design: TECHNICAL_DESIGN.md Sections 7.1 and 13.4; DATABASE_DESIGN.md Section 6.
+"""
+
 from datetime import datetime
 
 from sqlalchemy import func, select
@@ -9,11 +19,11 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import Settings
-
-# TECHNICAL_DESIGN 7.1 and 13.5: fixed by design, not configurable.
-LOCK_TIMEOUT = "5s"
-STATEMENT_TIMEOUT = "10s"
-IDLE_IN_TRANSACTION_TIMEOUT = "15s"
+from app.core.constants import (
+    DB_IDLE_IN_TRANSACTION_TIMEOUT,
+    DB_LOCK_TIMEOUT,
+    DB_STATEMENT_TIMEOUT,
+)
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
@@ -25,9 +35,9 @@ def create_engine(settings: Settings) -> AsyncEngine:
         connect_args={
             "server_settings": {
                 "timezone": "UTC",
-                "lock_timeout": LOCK_TIMEOUT,
-                "statement_timeout": STATEMENT_TIMEOUT,
-                "idle_in_transaction_session_timeout": IDLE_IN_TRANSACTION_TIMEOUT,
+                "lock_timeout": DB_LOCK_TIMEOUT,
+                "statement_timeout": DB_STATEMENT_TIMEOUT,
+                "idle_in_transaction_session_timeout": DB_IDLE_IN_TRANSACTION_TIMEOUT,
             }
         },
     )

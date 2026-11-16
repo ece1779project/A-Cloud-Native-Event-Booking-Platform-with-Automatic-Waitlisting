@@ -1,9 +1,12 @@
-"""Process configuration (TECHNICAL_DESIGN 13.5).
+"""Settings for every process, read from environment variables and validated
+at startup. A missing or malformed value stops the process.
 
-Field names map case-insensitively to the environment variables in that table.
-Secrets without defaults (JWT keys, bootstrap admin) are added with the
-authentication work. Values the design fixes, such as database timeouts, are
-code constants, not settings.
+This is the only module that reads the environment. Field names map
+case-insensitively to the variables in the design table. Secrets without
+defaults (JWT keys, bootstrap administrator) are added with the
+authentication work; values the design fixes live in ``app.core.constants``.
+
+Design: TECHNICAL_DESIGN.md Section 13.5.
 """
 
 from functools import lru_cache

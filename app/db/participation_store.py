@@ -11,13 +11,11 @@ from datetime import datetime
 from sqlalchemy import Row, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.event import EventSession
-from app.models.participation import (
-    ACTIVE_STATES,
-    Participation,
-    ParticipationChange,
-    ParticipationState,
-)
+from app.domain.enums import ParticipationState
+from app.domain.transitions import ACTIVE_STATES
+from app.models.event_session import EventSession
+from app.models.participation import Participation
+from app.models.participation_change import ParticipationChange
 
 
 @dataclass(frozen=True, slots=True)

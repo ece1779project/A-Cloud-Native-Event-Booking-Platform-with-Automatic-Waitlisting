@@ -1,3 +1,12 @@
+"""Health endpoints, mounted outside ``/api/v1``.
+
+``/health/live`` checks only that the event loop responds and calls no
+dependency. ``/health/ready`` checks PostgreSQL and Redis and returns 503 when
+either fails. ``/metrics`` will be added.
+
+Design: TECHNICAL_DESIGN.md Section 13.3.
+"""
+
 import asyncio
 
 from fastapi import APIRouter, Request, Response

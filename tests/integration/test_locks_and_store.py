@@ -5,7 +5,13 @@ import uuid
 import pytest
 
 from app.db.engine import db_now
-from app.db.locks import RowMissing, lock_event_scope, lock_session_scope
+from app.db.locks import (
+    RowMissing,
+    lock_account_scope,
+    lock_event_scope,
+    lock_queue_head_account,
+    lock_session_scope,
+)
 from app.db.participation_store import (
     active_attempt,
     bump_version,
@@ -15,7 +21,7 @@ from app.db.participation_store import (
     session_counts,
     waitlist_position,
 )
-from app.models.participation import ParticipationState
+from app.domain.enums import ParticipationState
 from tests.factories import make_account, make_held, make_scope, make_waiting
 
 
@@ -31,6 +37,21 @@ async def test_lock_session_scope_returns_locked_rows(session_factory):
         assert scope.event.id == event.id
         assert scope.session.id == session.id
         assert list(scope.accounts) == sorted([attendee.id, organizer.id])
+        assert scope.now is not None
+
+
+async def test_account_and_queue_head_locks(session_factory):
+    async with session_factory.begin() as db:
+        a, b = await make_account(db), await make_account(db)
+
+    async with session_factory.begin() as db:
+        locked = await lock_account_scope(db, share_ids=[b.id], exclusive_ids=[a.id, b.id])
+        assert list(locked.accounts) == sorted([a.id, b.id])
+        head = await lock_queue_head_account(db, a.id)
+        assert head.account.id == a.id
+        assert head.now >= locked.now
+        with pytest.raises(RowMissing):
+            await lock_queue_head_account(db, uuid.uuid4())
 
 
 async def test_missing_rows_raise(session_factory):

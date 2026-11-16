@@ -7,10 +7,11 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
-from app.db.engine import db_now, is_retryable_timeout
+from app.db.engine import is_retryable_timeout
 from app.db.locks import lock_session_scope
 from app.db.participation_store import bump_version, capacity_violations, session_counts
-from app.models.participation import Participation, ParticipationState
+from app.domain.enums import ParticipationState
+from app.models.participation import Participation
 from tests.factories import make_account, make_held, make_scope
 
 
@@ -28,7 +29,7 @@ async def test_lock_timeout_is_retryable(session_factory):
 
 
 async def test_db_now_reflects_lock_wait(session_factory):
-    """clock_timestamp() after the lock is later than the transaction start."""
+    """The scope's clock is read after the lock wait, not at transaction start."""
     async with session_factory.begin() as db:
         _, _, session = await make_scope(db)
 
@@ -44,8 +45,8 @@ async def test_db_now_reflects_lock_wait(session_factory):
         await locked.wait()
         async with session_factory.begin() as db:
             started = await db.scalar(select(func.now()))
-            await lock_session_scope(db, session.id)
-            return await db_now(db) - started
+            scope = await lock_session_scope(db, session.id)
+            return scope.now - started
 
     _, waited = await asyncio.gather(hold(), wait())
     assert waited >= timedelta(seconds=0.3)
