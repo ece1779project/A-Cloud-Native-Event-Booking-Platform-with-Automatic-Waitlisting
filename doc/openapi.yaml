@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: SeatFlow API
-  version: 0.1.0-draft
+  version: 0.2.0-draft
   description: |
     Contract-first draft of the SeatFlow HTTP API, written from
     TECHNICAL_DESIGN.md Section 8 and PRD.md before the routes exist.
@@ -14,14 +14,16 @@ info:
     - JSON is `snake_case`; UUIDs are lowercase canonical strings.
     - Timestamps are RFC 3339 UTC with an explicit `Z`.
     - Every response carries `X-Request-ID`.
-    - Mutating authenticated business endpoints require `Idempotency-Key`.
-      Login, refresh, logout, and real-time ticket issuance are exempt.
+    - Every mutating authenticated endpoint, attendee and management alike,
+      requires `Idempotency-Key`. Login, refresh, logout, and real-time ticket
+      issuance are exempt; account registration is unauthenticated and takes no key.
     - Success responses are wrapped as `{data, meta}`; errors as `{error, meta}`.
+      Participation commands also carry their business result code in `meta.result`.
     - Write schemas reject unknown fields (`additionalProperties: false`).
-    - Private records owned by another attendee return 404, not 403.
-      Management endpoints return 403 when the caller lacks role or ownership.
-
-    Items marked `TBD` are open team decisions.
+    - Private records owned by another attendee return 404, not 403. A draft
+      event or session the caller cannot see returns 404 on every route,
+      management routes included. Management endpoints return 403 when the
+      caller can see the resource but lacks the role or ownership.
 servers:
   - url: /api/v1
 tags:
@@ -33,7 +35,6 @@ tags:
   - name: Requests
   - name: Admin
   - name: Realtime
-  - name: Health
 
 security:
   - bearerAuth: []
@@ -47,7 +48,7 @@ paths:
       summary: Register an attendee account
       description: |
         Public registration always creates `ATTENDEE`. No role field is accepted.
-        Duplicate email error code is TBD (proposal: `VALIDATION_ERROR` 422 or a new `EMAIL_TAKEN` 409).
+        An email that already exists (after normalization) returns `409 EMAIL_ALREADY_REGISTERED`.
       security: []
       requestBody:
         required: true
@@ -61,8 +62,13 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AccountEnvelope' }
+        '409':
+          description: '`EMAIL_ALREADY_REGISTERED`.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '422': { $ref: '#/components/responses/ValidationError' }
-        '429': { $ref: '#/components/responses/RateLimited' }
 
   /me:
     get:
@@ -95,6 +101,29 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ParticipationPageEnvelope' }
+        '401': { $ref: '#/components/responses/Unauthenticated' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /me/events:
+    get:
+      tags: [Events]
+      operationId: listMyEvents
+      summary: Events the caller can manage (organizer or admin)
+      description: |
+        Organizers get every event they own, in any status, drafts included.
+        Administrators get every event. Attendees get `403 FORBIDDEN`.
+        Sorted by `created_at` descending, then event ID. `sessions` is not populated.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: A page of events.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventPageEnvelope' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '422': { $ref: '#/components/responses/ValidationError' }
@@ -216,7 +245,7 @@ paths:
       parameters:
         - name: q
           in: query
-          description: Keyword matched against title, description, and location.
+          description: Keyword matched against title and description.
           schema: { type: string, maxLength: 100 }
         - name: open
           in: query
@@ -237,7 +266,7 @@ paths:
       operationId: createEvent
       summary: Create a draft event (organizer or admin)
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -252,6 +281,7 @@ paths:
               schema: { $ref: '#/components/schemas/EventEnvelope' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
 
   /events/{event_id}:
@@ -275,8 +305,9 @@ paths:
       tags: [Events]
       operationId: patchEvent
       summary: Edit title, description, or location (owner or admin)
+      description: All three fields stay editable after publication; a cancelled event cannot be edited.
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -293,7 +324,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: '`EVENT_CANCELLED`.'
+          description: '`EVENT_CANCELLED` or `IDEMPOTENCY_CONFLICT`.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -305,12 +337,24 @@ paths:
     post:
       tags: [Events]
       operationId: publishEvent
-      summary: Publish a draft (requires at least one valid session)
+      summary: Publish the event and its valid draft sessions (owner or admin)
+      description: |
+        A valid session is a `DRAFT` session whose `registration_closes_at` is later
+        than the database time. One transaction publishes every valid draft session
+        and, if the event is still `DRAFT`, the event itself. Invalid draft sessions
+        stay `DRAFT`.
+
+        - Draft event with no valid session → `409 INVALID_STATE_TRANSITION`.
+        - Already published event → publishes any valid draft sessions added since;
+          with none, returns `200` with nothing changed.
+
+        This is the only way to publish a session, including one added to an
+        already published event.
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+        - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
-          description: Published (or already published).
+          description: Published, or already published with nothing left to publish.
           headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
           content:
             application/json:
@@ -319,10 +363,12 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: '`EVENT_CANCELLED` or `INVALID_STATE_TRANSITION` (no valid session).'
+          description: '`EVENT_CANCELLED`, `INVALID_STATE_TRANSITION` (draft event with no valid session), or `IDEMPOTENCY_CONFLICT`.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
   /events/{event_id}/cancel:
     parameters:
@@ -336,7 +382,7 @@ paths:
         terminalized with `EVENT_CANCELLED`, versions incremented, one management action
         recorded. On statement timeout nothing is applied and `503 LOCK_TIMEOUT` is returned.
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -352,6 +398,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
@@ -362,8 +409,11 @@ paths:
       tags: [Sessions]
       operationId: createSession
       summary: Add a session to an event (owner or admin)
+      description: |
+        A new session always starts as `DRAFT`, even on a published event, and
+        becomes public only through `POST /events/{event_id}/publish`.
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -380,7 +430,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: '`EVENT_CANCELLED`.'
+          description: '`EVENT_CANCELLED` or `IDEMPOTENCY_CONFLICT`.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -394,6 +445,10 @@ paths:
       tags: [Sessions]
       operationId: getSession
       summary: Session details, availability snapshot, queue count, and version
+      description: |
+        A session is public when it and its event are published or cancelled. A draft
+        session, or any session of a draft event, is visible only to the event owner
+        and administrators; others get 404.
       security: [{}, { bearerAuth: [] }]
       responses:
         '200':
@@ -408,13 +463,14 @@ paths:
       operationId: patchSession
       summary: Edit a session (owner or admin)
       description: |
-        - Once any participation exists, `time_zone`, registration times, and session times
-          are frozen (error code TBD; proposal `INVALID_STATE_TRANSITION`).
+        - Once any participation exists, terminal ones included, `time_zone`, registration
+          times, and session times are frozen; changing any of them returns
+          `409 SCHEDULE_FROZEN`. Rescheduling means cancelling and creating a new session.
         - After publication capacity may increase (waiters are promoted in the same
           transaction) and may decrease only down to current occupancy
           (`CAPACITY_BELOW_OCCUPIED`).
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -431,7 +487,8 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409':
-          description: '`CAPACITY_BELOW_OCCUPIED`, `SESSION_CANCELLED`, `EVENT_CANCELLED`, `SESSION_STARTED`, or schedule-frozen (TBD).'
+          description: '`CAPACITY_BELOW_OCCUPIED`, `SCHEDULE_FROZEN`, `SESSION_CANCELLED`, `EVENT_CANCELLED`, `SESSION_STARTED`, or `IDEMPOTENCY_CONFLICT`.'
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -447,7 +504,7 @@ paths:
       summary: Cancel one session (owner or admin)
       description: Active attempts are terminalized with `SESSION_CANCELLED` in the same transaction.
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -463,6 +520,7 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
@@ -610,6 +668,8 @@ paths:
       description: |
         - `success` → `200 CONFIRMED`.
         - `failure` → `200 PAYMENT_SIMULATION_FAILED`; state and deadline are unchanged.
+          This is a resolved outcome: a new attempt to pay uses a new `Idempotency-Key`,
+          because reusing the old key replays the stored failure.
         - Deadline passed → the attempt is expired, the seat is offered to the next
           waiter (committed), then `409 PARTICIPATION_EXPIRED` is returned.
         No card or bank data is accepted.
@@ -662,6 +722,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/StateConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
   /participations/{participation_id}/decline:
@@ -691,6 +752,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/StateConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
   /participations/{participation_id}/leave:
@@ -720,6 +782,7 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/StateConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
   # ---------------------------------------------------------------- Requests
@@ -736,18 +799,28 @@ paths:
       summary: Retrieve the caller's stored command outcome
       description: |
         Used after a timeout ("Checking result"). Returns the original status code and
-        body exactly as first produced. 404 if the command never committed, failed
+        body exactly as first produced, for attendee and management commands alike,
+        after current access is rechecked. 404 if the command never committed, failed
         without consuming the key, or belongs to another account.
       responses:
         '200':
-          description: Replay of the stored outcome. The real status may also be 201 or 409, mirroring the original response.
+          description: Replay of a stored `200` outcome.
           headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
           content:
             application/json:
-              schema:
-                oneOf:
-                  - $ref: '#/components/schemas/CommandEnvelope'
-                  - $ref: '#/components/schemas/ErrorEnvelope'
+              schema: { $ref: '#/components/schemas/StoredSuccessEnvelope' }
+        '201':
+          description: Replay of a stored `201` outcome (new hold, waitlist entry, event, or session).
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/StoredSuccessEnvelope' }
+        '409':
+          description: Replay of a stored business rejection, such as `WAITLIST_REQUIRED` or `PARTICIPATION_EXPIRED`.
+          headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '404': { $ref: '#/components/responses/NotFound' }
 
@@ -780,9 +853,15 @@ paths:
       tags: [Admin]
       operationId: adminPatchAccount
       summary: Change role or disabled status with an audit reason (admin only)
-      description: Disabling revokes all refresh sessions of the account. The change and audit record commit together.
+      description: |
+        Disabling revokes all refresh sessions of the account. The change and audit
+        record commit together.
+
+        `role` may only be `ATTENDEE` or `ORGANIZER`; administrators are created
+        only by the bootstrap command. The target cannot be the caller or another
+        `ADMIN` account (`403 FORBIDDEN`).
       parameters:
-        - $ref: '#/components/parameters/IdempotencyKeyTBD'
+        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -798,7 +877,9 @@ paths:
         '401': { $ref: '#/components/responses/Unauthenticated' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/IdempotencyConflict' }
         '422': { $ref: '#/components/responses/ValidationError' }
+        '503': { $ref: '#/components/responses/Unavailable' }
 
   /admin/participations/{participation_id}/cancel:
     parameters:
@@ -836,10 +917,15 @@ paths:
       operationId: createRealtimeTicket
       summary: Issue a single-use WebSocket connection ticket (30 s)
       description: |
-        Anonymous callers get public scope only; authenticated callers may also get
-        own-participation and authorized management scopes. The browser then offers
-        `seatflow.v1` and `seatflow.ticket.<ticket>` in `Sec-WebSocket-Protocol`.
-        Exempt from `Idempotency-Key`. Owned by the real-time workstream; response shape TBD.
+        Scopes are granted from the caller's current account (TECHNICAL_DESIGN 10.5):
+        - `public`: every caller. Allows `session:{session_id}` channels.
+        - `account`: authenticated, enabled callers. Allows `me:participations`.
+        - `management`: current `ORGANIZER` or `ADMIN`. Allows
+          `event:{event_id}:management`; ownership is still checked per channel on subscribe.
+
+        The browser then offers `seatflow.v1` and `seatflow.ticket.<ticket>` in
+        `Sec-WebSocket-Protocol`. Exempt from `Idempotency-Key`. Returns
+        `503 SERVICE_UNAVAILABLE` while Redis is unavailable.
       security: [{}, { bearerAuth: [] }]
       responses:
         '201':
@@ -849,7 +935,7 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TicketEnvelope' }
         '401': { $ref: '#/components/responses/Unauthenticated' }
-        '429': { $ref: '#/components/responses/RateLimited' }
+        '403': { $ref: '#/components/responses/Forbidden' }
         '503': { $ref: '#/components/responses/Unavailable' }
 
 components:
@@ -908,12 +994,6 @@ components:
         Scoped to the account. The same key with different parameters returns
         `409 IDEMPOTENCY_CONFLICT`. A repeat returns the stored status and body.
       schema: { type: string, format: uuid }
-    IdempotencyKeyTBD:
-      name: Idempotency-Key
-      in: header
-      required: false
-      description: TBD whether management endpoints require it. Shown as optional until the team decides.
-      schema: { type: string, format: uuid }
     CsrfToken:
       name: X-CSRF-Token
       in: header
@@ -935,13 +1015,13 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     Forbidden:
-      description: '`FORBIDDEN` (role or ownership) or `ACCOUNT_DISABLED`.'
+      description: '`FORBIDDEN` (role or ownership on a resource the caller can see) or `ACCOUNT_DISABLED`.'
       headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     NotFound:
-      description: '`RESOURCE_NOT_FOUND` — also returned for another attendee''s private record or a draft the caller cannot see.'
+      description: '`RESOURCE_NOT_FOUND` — also returned for another attendee''s private record, and on every route (management included) for a draft event or session the caller cannot see.'
       headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
       content:
         application/json:
@@ -966,6 +1046,12 @@ components:
               request_id: 0193b0a2-7c1e-7d2a-9f3e-2b5c1a4d6e7f
               server_time: '2026-11-14T22:00:00Z'
               session_version: 12
+    IdempotencyConflict:
+      description: '`IDEMPOTENCY_CONFLICT` — the same `Idempotency-Key` was used with different inputs.'
+      headers: { X-Request-ID: { $ref: '#/components/headers/XRequestId' } }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorEnvelope' }
     StateConflict:
       description: |
         `PARTICIPATION_EXPIRED`, `INVALID_STATE_TRANSITION`, `REGISTRATION_CLOSED`,
@@ -1048,6 +1134,8 @@ components:
         - PARTICIPATION_EXPIRED
         - SESSION_STARTED
         - CAPACITY_BELOW_OCCUPIED
+        - SCHEDULE_FROZEN
+        - EMAIL_ALREADY_REGISTERED
         - WAITLIST_REQUIRED
         - DIRECT_BOOKING_AVAILABLE
         - REFRESH_ALREADY_ROTATED
@@ -1126,10 +1214,12 @@ components:
       type: object
       additionalProperties: false
       required: [reason]
-      minProperties: 2
-      description: At least one of `role` or `disabled` is required.
+      anyOf:
+        - required: [role]
+        - required: [disabled]
+      description: At least one of `role` or `disabled` is required. `ADMIN` cannot be granted.
       properties:
-        role: { $ref: '#/components/schemas/Role' }
+        role: { type: string, enum: [ATTENDEE, ORGANIZER] }
         disabled: { type: boolean }
         reason: { type: string, minLength: 1, maxLength: 500 }
 
@@ -1214,6 +1304,8 @@ components:
         - available_count
         - waitlist_count
         - registration_status
+        - cancelled_at
+        - cancellation_reason
         - version
       properties:
         id: { type: string, format: uuid }
@@ -1230,6 +1322,8 @@ components:
         available_count: { type: integer }
         waitlist_count: { type: integer }
         registration_status: { $ref: '#/components/schemas/RegistrationStatus' }
+        cancelled_at: { type: [string, 'null'], format: date-time }
+        cancellation_reason: { type: [string, 'null'] }
         version: { type: integer, description: Session version; increments on every change. }
     CancelRequest:
       type: object
@@ -1257,12 +1351,12 @@ components:
         version: { type: integer }
         counts:
           type: object
-          required: [HELD, OFFERED, CONFIRMED, WAITLISTED]
+          required: [held, offered, confirmed, waitlisted]
           properties:
-            HELD: { type: integer }
-            OFFERED: { type: integer }
-            CONFIRMED: { type: integer }
-            WAITLISTED: { type: integer }
+            held: { type: integer }
+            offered: { type: integer }
+            confirmed: { type: integer }
+            waitlisted: { type: integer }
         held: { type: array, items: { $ref: '#/components/schemas/RosterEntry' } }
         offered: { type: array, items: { $ref: '#/components/schemas/RosterEntry' } }
         confirmed: { type: array, items: { $ref: '#/components/schemas/RosterEntry' } }
@@ -1347,7 +1441,9 @@ components:
       properties:
         ticket: { type: string, description: base64url single-use ticket. }
         expires_in: { type: integer, const: 30 }
-        scopes: { type: array, items: { type: string } }
+        scopes:
+          type: array
+          items: { type: string, enum: [public, account, management] }
 
     # ---------- envelopes
     AccountEnvelope:
@@ -1425,6 +1521,13 @@ components:
           server_time: '2026-11-14T22:00:00Z'
           session_version: 13
           result: HELD
+    StoredSuccessEnvelope:
+      description: Any success body a command with an `Idempotency-Key` can store.
+      oneOf:
+        - $ref: '#/components/schemas/CommandEnvelope'
+        - $ref: '#/components/schemas/EventEnvelope'
+        - $ref: '#/components/schemas/SessionEnvelope'
+        - $ref: '#/components/schemas/AccountEnvelope'
     TicketEnvelope:
       type: object
       required: [data, meta]
