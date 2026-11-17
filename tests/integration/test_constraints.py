@@ -1,5 +1,6 @@
 """Row checks, unique indexes and triggers from both migrations."""
 
+import re
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -8,6 +9,7 @@ from sqlalchemy import func, text, update
 from sqlalchemy.exc import DBAPIError
 
 from app.db.engine import CHECK_VIOLATION, UNIQUE_VIOLATION, sqlstate
+from app.domain.transitions import ALLOWED_TRANSITIONS
 from app.models.auth_session import AuthSession
 from app.models.event_session import EventSession
 from app.models.management_action import ManagementAction
@@ -236,6 +238,19 @@ async def test_legal_transition_is_allowed(session_factory):
             .where(Participation.id == p.id)
             .values(state="CONFIRMED", confirmed_at=Participation.allocated_at)
         )
+
+
+async def test_trigger_transitions_match_domain(session_factory):
+    """The transition list exists twice: in the trigger and in app.domain.
+    Read the trigger as deployed and fail when the two differ."""
+    async with session_factory.begin() as db:
+        source = await db.scalar(
+            text("SELECT prosrc FROM pg_proc WHERE proname = 'guard_participation_update'")
+        )
+    allowed_list = source.split("(OLD.state, NEW.state) NOT IN", 1)[1].split("THEN", 1)[0]
+    in_trigger = set(re.findall(r"\('(\w+)', '(\w+)'\)", allowed_list))
+
+    assert in_trigger == {(src.value, dst.value) for src, dst in ALLOWED_TRANSITIONS}
 
 
 async def test_schedule_freezes_after_any_participation(session_factory):

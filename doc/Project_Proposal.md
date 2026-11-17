@@ -76,9 +76,20 @@ Primary ownership is assigned by system capability.
 
 **Jiawei - Booking and API.** Lead authentication, event and session management, PostgreSQL models, and capacity enforcement, including concurrency tests to prevent overselling.
 
-**Jianye — Waitlist and Workers.** Lead waitlist management, expiration handling, and automatic seat offers, ensuring reliable processing, ordered promotion, idempotency, and Redis/PostgreSQL consistency.
+**Jianye — Waitlist and Workers.** Lead waitlist management, expiration handling, and automatic seat offers, ensuring reliable processing, ordered promotion, and Redis/PostgreSQL consistency.
 
 **Yifeng — Real-Time and Cloud.** Lead the WebSocket gateway, lightweight interface, DOKS deployment, persistent storage, monitoring, autoscaling, and infrastructure performance evaluation.
+
+Module ownership for the booking path, agreed during implementation:
+
+| Module or command | Owner |
+| --- | --- |
+| `domain/timing.py` (shared by booking and promotion) | Jiawei |
+| `services/idempotency.py` | Jiawei |
+| Direct booking and waitlist join (`services/booking.py`) | Jiawei |
+| Leave and decline | Jianye |
+| `services/promotion.py` and `services/expiration.py` | Jianye |
+| Worker health, `WORKER_METRICS_PORT` and scan gauge | Yifeng |
 
 All members will review interfaces, test integration, verify deployment, and prepare the presentation. Jiawei and Jianye will jointly validate reservation correctness; Yifeng will support cloud testing.
 

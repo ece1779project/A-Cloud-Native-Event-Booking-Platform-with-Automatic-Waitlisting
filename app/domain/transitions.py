@@ -2,7 +2,9 @@
 seat, and which transition each operation may perform.
 
 The database enforces the same transition table with the
-``trg_participations_guard_update`` trigger; keep the two in step.
+``trg_participations_guard_update`` trigger. A change here needs a new
+migration that replaces the trigger function;
+``tests/integration/test_constraints.py`` fails when the two differ.
 
 Design: DATABASE_DESIGN.md Section 3.
 """

@@ -96,7 +96,7 @@ Acceptance testing must access the same resources as an anonymous user, two atte
 - **FR-02.5** Support draft, published, and cancelled states.
 - **FR-02.6** Drafts are visible only to their organizer and administrators; publication requires at least one valid session.
 - **FR-02.7** Registration status is determined by server time, independently of whether scheduled tasks execute on time.
-- **FR-02.8** After publication, descriptions and locations may be edited and capacity may be increased.
+- **FR-02.8** After publication, titles, descriptions and locations may be edited and capacity may be increased.
 - **FR-02.9** Capacity may also be reduced, but not below the number of currently occupied seats.
 - **FR-02.10** Once any registration or waitlist record exists, this release no longer allows changes to the session's registration or event times, avoiding changes to previously promised deadlines.
 - **FR-02.11** If rescheduling is necessary, cancel the original session and create a new one.

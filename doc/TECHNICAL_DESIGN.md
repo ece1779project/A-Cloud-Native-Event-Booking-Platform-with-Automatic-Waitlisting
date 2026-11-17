@@ -1,8 +1,14 @@
 # Technical Design Document: Cloud-Native Event Booking Platform
 
-Version: 1.0  
-Date: 2026-11-14  
+Version: 1.3  
+Date: 2026-11-16  
 Status: Proposed target design; implementation pending
+
+Changes in 1.3: the transaction owner increments the session version once, after every step and before commit (Sections 6.3 and 7). Commands on an existing participation first apply `expire_if_overdue` and `end_waiting_if_closed`, and the operations that run `promote_waiters` are listed (Sections 7.3 and 7.4). System transitions record a null `actor_id`, disabled waiters end as `CANCELLED` with `ACCOUNT_DISABLED`, and all overdue attempts of one session are handled in one transaction (Sections 7.4 and 11).
+
+Changes in 1.2: a command that advances a session version returns `SessionChange`, and the publisher accepts that value after commit (Sections 5.2 and 10.3). The worker process serves health and metrics on `WORKER_METRICS_PORT`, and a gauge records the last completed scan (Sections 13.3, 13.5, and 14).
+
+Changes in 1.1: aligned with the draft contract in [openapi.yaml](openapi.yaml). Management commands require `Idempotency-Key`; new codes `EMAIL_ALREADY_REGISTERED` and `SCHEDULE_FROZEN`; event publication also publishes sessions added later; `GET /me/events` lists manageable events; hidden drafts return 404 on management routes; event titles stay editable after publication; administrators cannot grant `ADMIN`; WebSocket ticket scopes are named (Section 10.5).
 
 ## 1. Purpose
 
@@ -16,7 +22,7 @@ Requirement identifiers such as FR-04 and NFR-01 refer to the PRD.
 
 The following work remains to be implemented:
 
-- Database models, Alembic migrations, repositories, or transactions.
+- Business transactions built on the database layer: booking, confirmation, cancellation, promotion, and idempotency receipts.
 - Account registration, authentication, authorization, and administration.
 - Event, session, booking, confirmation, cancellation, or waitlist APIs.
 - Expiration and promotion workers.
@@ -24,7 +30,7 @@ The following work remains to be implemented:
 - WebSocket gateway and frontend.
 - Kubernetes manifests, migration jobs, monitoring, dashboards, alerts, or load tests.
 
-The package skeleton in Section 5 is in place: every module exists with a statement of its responsibility, and the API still serves only the scaffold health endpoint.
+The package skeleton in Section 5 is in place: every module exists with a statement of its responsibility. The database layer is implemented and tested: settings, the engine, the SQLAlchemy models, both Alembic revisions, the lock entry point, the participation store, and the `/health/live` and `/health/ready` endpoints. Compose runs the migration before it starts the API.
 
 The remaining sections describe planned behavior rather than completed or measured results.
 
@@ -134,7 +140,7 @@ flowchart LR
 - Scan PostgreSQL for overdue holds and offers, closed registrations, and sessions needing promotion.
 - Reacquire the same locks as API writers and recheck every candidate.
 - Process bounded batches safely across multiple replicas.
-- Export backlog, latency, and capacity-invariant metrics.
+- Export backlog, latency, capacity-invariant metrics, and the time of the last completed scan.
 
 **WebSocket gateway**
 
@@ -158,7 +164,7 @@ flowchart LR
 
 ## 5. Repository structure
 
-The API, workers, and WebSocket gateway share one Python package and image. Different container commands start different process types. The backend package and the test and deployment directories exist as a skeleton: each module carries a docstring that states its responsibility and the section of this document it implements, and no business behavior is implemented yet.
+The API, workers, and WebSocket gateway share one Python package and image. Different container commands start different process types. Each module carries a docstring that states its responsibility and the section of this document it implements. Section 2 lists which modules are implemented; the others are still skeletons.
 
 ```text
 .
@@ -194,8 +200,9 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   │   └── timing.py                 # Registration window and deadline rules
 │   ├── db/
 │   │   ├── base.py                   # DeclarativeBase and naming convention
-│   │   ├── engine.py                 # Engine, session factory, timeouts
-│   │   └── locks.py                  # The only business-write lock entry point
+│   │   ├── engine.py                 # Engine, session factory, timeouts, database clock
+│   │   ├── locks.py                  # The only business-write lock entry point
+│   │   └── participation_store.py    # Participation reads and low-level writes
 │   ├── models/                       # One module per table
 │   │   ├── account.py
 │   │   ├── auth_session.py
@@ -212,7 +219,7 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   │   ├── events.py
 │   │   ├── sessions.py
 │   │   ├── participations.py
-│   │   └── realtime.py               # Every WebSocket message (Section 10.5)
+│   │   └── realtime.py               # WebSocket messages (Section 10.1) and SessionChange (Section 10.3)
 │   ├── services/                     # Transactional command and query services
 │   │   ├── accounts.py
 │   │   ├── auth.py
@@ -223,7 +230,7 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   │   ├── promotion.py              # Promote steps, shared with workers
 │   │   ├── expiration.py             # Expiry and registration closure
 │   │   ├── idempotency.py            # Command receipts
-│   │   └── audit.py                  # History and management-action writers
+│   │   └── audit.py                  # Management-action writer
 │   ├── realtime/
 │   │   ├── publisher.py              # Post-commit publication (API and workers)
 │   │   ├── tickets.py                # Issue (API) and consume (gateway)
@@ -242,8 +249,8 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   └── cli/                          # One-off commands
 │       ├── bootstrap_admin.py
 │       └── export_openapi.py
-├── migrations/                       # Created by `alembic init -t async migrations`
-├── alembic.ini                       # Created by the same command
+├── migrations/                       # Alembic environment and revisions
+├── alembic.ini
 ├── frontend/                         # Created by the Vite scaffold in Phase 4
 │   ├── src/
 │   │   ├── api/
@@ -262,7 +269,8 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   ├── monitoring/                   # Prometheus, Grafana, alert rules
 │   └── scripts/
 ├── tests/
-│   ├── conftest.py
+│   ├── conftest.py                   # PostgreSQL fixtures shared by integration and concurrency
+│   ├── factories.py                  # Row builders that bypass business rules
 │   ├── unit/                         # domain, core, schema validation; no database
 │   ├── integration/                  # Services and routes against PostgreSQL and Redis
 │   ├── concurrency/                  # Races over independent connections
@@ -274,7 +282,7 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 └── pyproject.toml
 ```
 
-`migrations/`, `alembic.ini`, and `frontend/` are absent until their generators run, because both generators expect an empty target directory.
+`frontend/` is absent until the Vite scaffold runs, because that generator expects an empty target directory.
 
 ### 5.1 Process entry points
 
@@ -298,10 +306,13 @@ schemas, models, db                       contracts and persistence
 domain, core                              leaves; import nothing from app
 ```
 
-- Route handlers validate transport data, call one service, and publish its committed result. They open no transaction and take no lock.
+- Route handlers validate transport data, call one service, and, when that service returns a `SessionChange`, publish it after the call returns. They open no transaction and take no lock.
 - Services own authorization-sensitive business decisions and transactions. A service is called by route handlers and by workers, knows nothing about HTTP, and never imports `app.api`, `app.workers`, or `app.realtime`.
-- A service returns its committed result together with the invalidations to publish. The caller, a route handler or a worker loop, passes them to `realtime/publisher.py` after the service returns, so publication can never run inside a transaction.
+- The service that owns the transaction returns `None`, one `SessionChange`, or a list of them when the transaction advanced several session versions. `None` and an empty list mean that no session version changed. The fields are `event_id`, `session_id`, `version`, `cause`, and `transitions`, and the type is defined in Section 10.3. The caller, a route handler or a worker loop, passes the returned values to `realtime/publisher.py` after the service returns. `None` and an empty list are not published. The service does not build WebSocket messages, and publication never runs inside a transaction.
+- The transaction owners are `services/booking.py`, `services/participations.py`, `services/sessions.py`, `services/events.py`, and `services/expiration.py`. An event publish or an event cancel returns one `SessionChange` per session version it incremented. `services/promotion.py` only applies steps inside the caller's transaction, so it does not return a `SessionChange` and does not publish. A simulated payment failure, an event-field edit, an account disable, and a replay that writes nothing return `None`.
 - Models hold columns, constraints, and indexes only. Models never publish messages.
+- `db/participation_store.py` holds the participation queries and low-level writes that several services share: occupancy counts, the queue head, waitlist position, the queue number, the session version, and the history row. It makes no business decision, and its writes assume the caller already holds the session lock from `db/locks.py`.
+- PostgreSQL triggers reject an illegal state transition and any edit of history or frozen fields (`DATABASE_DESIGN.md` Section 2.6). They are a last line of defense: a service checks the rule first and returns the stable error code, so a trigger rejection that reaches a client is a bug.
 - `domain` holds the state machine and time rules as pure functions. Models, schemas, services, workers, and the gateway share its enumerations, and unit tests cover it without a database.
 - A worker scan only selects candidates. Each candidate is handled through the same service and lock entry point as an API command.
 - The gateway reads PostgreSQL only for the account-state and ownership checks in Section 10.2 and never calls a service that writes.
@@ -366,6 +377,8 @@ This table must be included in the first Alembic revision.
 - Use `clock_timestamp()` after all blocking locks for registration and deadline decisions.
 - Never use browser time, API process time, or PostgreSQL transaction-start `now()` to decide whether a hold can confirm.
 - Increment `event_sessions.version` in every committed transaction that changes capacity, status, or any participation in the session.
+- The transaction owner (Section 5.2) increments the version exactly once per session per transaction, after all business steps and immediately before commit. Helper steps such as `promote_waiters`, `expire_if_overdue`, and `end_waiting_if_closed` neither commit nor increment the version. A transaction that changes nothing leaves the version unchanged and returns `None`.
+- Publication of the resulting `SessionChange` happens only after commit (Section 10.3).
 - Include `session_version` in session reads, participation reads, command results, and real-time events.
 
 ## 7. Transaction and concurrency design
@@ -414,6 +427,13 @@ Joining the waitlist under the same lock:
 
 Confirmation locks the session and attempt, then reads database time. If `t >= deadline_at`, it first expires the attempt and promotes from the queue in the same transaction; confirmation returns `PARTICIPATION_EXPIRED`. Otherwise a successful simulation changes `HELD` or `OFFERED` to `CONFIRMED` without changing occupancy. A simulated failure changes no participation state and leaves the original deadline intact.
 
+Every command on an existing participation (confirm, cancel, decline, leave, and administrator cancel) runs two steps from `services/expiration.py` after the locks and clock read and before its own validation:
+
+1. `expire_if_overdue`: a `HELD` or `OFFERED` attempt whose deadline has passed becomes `EXPIRED` with `HOLD_EXPIRED` or `OFFER_EXPIRED`.
+2. `end_waiting_if_closed`: a `WAITLISTED` entry in a session whose registration has closed becomes `CANCELLED` with `REGISTRATION_CLOSED`.
+
+The command then validates against the resulting state, so an attendee acting late meets the same outcome the worker would have written.
+
 The worker follows the same lock path. A stale expiry candidate becomes a no-op. The session lock ensures that confirmation and expiration cannot both win.
 
 ### 7.4 Cancellation, capacity changes, and promotion
@@ -426,14 +446,29 @@ Any transaction that frees a seat or increases capacity promotes waiters before 
 4. End an ineligible entry with a recorded reason, or change it to `OFFERED`.
 5. After that account lock, sample `clock_timestamp()` and recheck registration time.
 6. Set `allocated_at` to that database time and set `deadline_at` to the earlier of ten minutes later and registration close.
-7. Increment the session version for every transaction that changes the queue or occupancy.
+7. Leave the version increment to the transaction owner, which increments it once before commit (Section 6.3).
 8. Repeat for available seats, up to 20 offers per transaction, obtaining a fresh database time after each new blocking account lock.
+
+These operations call `services/promotion.py::promote_waiters` before commit:
+
+- Attendee cancel of a hold or confirmed booking, and decline of an offer.
+- Administrator cancel of a participation.
+- A capacity increase.
+- A confirmation that finds its attempt overdue and expires it (Section 7.3).
+- Expiration and closure transactions while registration remains open, and the worker promotion scan (Section 11).
+
+Leaving the waitlist frees no seat and does not promote.
+
+Promotion rules:
+
+- A history row written by promotion, expiration, or closure has a null `actor_id`. Only a transition requested by an account records that account; a promotion inside an attendee's or administrator's command still records null for the promoted entry.
+- A queue-head account that is disabled ends as `CANCELLED` with reason `ACCOUNT_DISABLED`; promotion then continues with the next entry. Other ineligible entries end with `INELIGIBLE`.
 
 Do not use `SKIP LOCKED` to choose attendees within one session. It may be used only to distribute independent scan candidates across sessions. Capacity reductions are rejected below current occupancy. Existing waiters are promoted before new arrivals can directly book.
 
 ### 7.5 Idempotency
 
-All authenticated business commands require an `Idempotency-Key` header containing a client-generated UUID. The server scopes it by account and stores its result in `request_results`.
+All authenticated business commands, attendee and management alike, require an `Idempotency-Key` header containing a client-generated UUID. The server scopes it by account and stores its result in `request_results`.
 
 - The parameter hash covers the operation, target IDs, and canonical business input.
 - A matching retry replays the original status and body after current access is rechecked.
@@ -481,10 +516,11 @@ If publication fails after commit, the API response remains successful. Other cl
 - UUIDs are lowercase canonical strings.
 - Timestamps are RFC 3339 UTC values with an explicit `Z`.
 - List endpoints use an opaque, URL-safe cursor and `limit` defaulting to 20 and capped at 100. A cursor encodes the endpoint's deterministic sort key and ID tie-breaker; clients must not construct it.
-- Mutating authenticated business endpoints require `Idempotency-Key`. Login, token refresh, logout, and real-time ticket issuance are exempt.
+- Every mutating authenticated endpoint requires `Idempotency-Key`, including event, session, and administrator commands. Login, token refresh, logout, and real-time ticket issuance are exempt. Account registration is unauthenticated and takes no key.
+- A participation command response carries its business result code from Section 8.5 in `meta.result`.
 - Every response includes `X-Request-ID`; a safe client-supplied value may be retained, otherwise the server creates one.
 - A response concerning one session includes `session_version` in `meta`. Multi-session responses carry `version` on every session or participation item, and the client tracks versions by `session_id`.
-- OpenAPI is generated by FastAPI and checked into CI as a contract artifact.
+- OpenAPI is generated by FastAPI and checked into CI as a contract artifact. Until the routes exist, [openapi.yaml](openapi.yaml) is the reviewed draft of this section; afterwards the generated document is compared against it.
 
 Successful single-resource response:
 
@@ -526,20 +562,21 @@ Error response:
 - `POST /realtime/tickets`: create a public-only anonymous ticket, or an authenticated ticket that may include private scopes.
 - `GET /me`: return the current account, role, and disabled status.
 - `GET /admin/accounts`: list accounts; administrator only.
-- `PATCH /admin/accounts/{account_id}`: disable an account or change its role with an audit reason.
+- `PATCH /admin/accounts/{account_id}`: disable or re-enable an account or switch it between `ATTENDEE` and `ORGANIZER`, with an audit reason.
 
-Public registration always creates `ATTENDEE`. The bootstrap command creates the first administrator. No public route accepts an administrator or organizer role.
+Public registration always creates `ATTENDEE`; an email that already exists after normalization returns `409 EMAIL_ALREADY_REGISTERED`. The bootstrap command creates administrators. No route grants the `ADMIN` role, and an administrator cannot change their own account or another `ADMIN` account (`403 FORBIDDEN`).
 
 ### 8.3 Event and session routes
 
 Public:
 
-- `GET /events`: published events with keyword, open-registration, and cursor filters, sorted by nearest upcoming published session start and then event ID; events without an upcoming session appear last.
+- `GET /events`: published events with keyword (title and description), open-registration, and cursor filters, sorted by nearest upcoming published session start and then event ID; events without an upcoming session appear last.
 - `GET /events/{event_id}`: published event details and sessions; the owner or an administrator may also retrieve a draft.
-- `GET /sessions/{session_id}`: session details, availability snapshot, queue count, and version.
+- `GET /sessions/{session_id}`: session details, availability snapshot, queue count, and version. A draft session, or a session of a draft event, is visible only to the owner and administrators.
 
 Organizer or administrator:
 
+- `GET /me/events`: events the caller can manage, in every status and including drafts. Organizers get their own events; administrators get all events. Sorted by creation time descending, then event ID.
 - `POST /events`
 - `PATCH /events/{event_id}`
 - `POST /events/{event_id}/sessions`
@@ -551,7 +588,9 @@ Organizer or administrator:
 
 Cancellation requests require a nonblank reason. Ownership is checked in the service layer even when the UI hides an action.
 
-Drafts are visible only to their owner and administrators. Publication requires at least one valid session. Once any participation exists, registration times, session times, and display time zone cannot change. After publication, description and location may change, capacity may increase, and capacity may decrease only to current occupancy or above.
+Drafts are visible only to their owner and administrators. A valid session is a `DRAFT` session whose registration close is later than the database time. Every new session starts as `DRAFT`, including one added to a published event. `POST /events/{event_id}/publish` publishes every valid draft session and, if the event is still a draft, the event itself, in one transaction; invalid draft sessions stay `DRAFT`. A draft event with no valid session returns `409 INVALID_STATE_TRANSITION`. On a published event the same call publishes sessions added since, and returns `200` unchanged when there are none. It is the only route that publishes a session.
+
+Once any participation exists, including a terminal one, registration times, session times, and display time zone cannot change; such an edit returns `409 SCHEDULE_FROZEN`. After publication, title, description, and location may change, capacity may increase, and capacity may decrease only to current occupancy or above. A cancelled event or session cannot be edited.
 
 Session cancellation locks and marks the session `CANCELLED`, terminalizes its active attempts, appends their histories, increments the session version, and records the management action in one transaction. Event cancellation takes an exclusive event lock, locks sessions in ascending ID order, marks the parent and sessions cancelled, terminalizes every active attempt, appends history, increments affected versions, and records one management action in the same commit. If the bounded statement timeout is exceeded, the whole transaction rolls back and returns a retryable failure; no partial cancellation is exposed. Historical participation responses derive the visible label “Event cancelled” from a cancelled parent while preserving each attempt's original transition history and reason.
 
@@ -584,7 +623,9 @@ Command outcomes are fixed as follows:
 - `WAITLIST_REQUIRED` and `DIRECT_BOOKING_AVAILABLE` return `409` with current availability and version; they do not consume capacity or create participation.
 - Expired, closed, cancelled, started, or invalid-transition commands return `409`.
 
-Private records owned by another attendee return `404`, not `403`. Management endpoints return `403` when the authenticated manager lacks the required role or ownership.
+Private records owned by another attendee return `404`, not `403`. A draft event or session the caller cannot see returns `404` on every route, management routes included, so a response never reveals that the draft exists. Management endpoints return `403` when the caller can see the resource but lacks the required role or ownership.
+
+A simulated payment failure is a resolved outcome. A new payment attempt uses a new `Idempotency-Key`; reusing the old key replays the stored failure.
 
 ### 8.5 Stable result and error codes
 
@@ -593,8 +634,8 @@ Success and business result codes:
 - `HELD`, `WAITLISTED`, `OFFERED`, `CONFIRMED`, `CANCELLED`, `EXPIRED`
 - `PAYMENT_SIMULATION_FAILED`
 - `EXISTING_ACTIVE_PARTICIPATION`
-- `WAITLIST_REQUIRED`
-- `DIRECT_BOOKING_AVAILABLE`
+
+`WAITLIST_REQUIRED` and `DIRECT_BOOKING_AVAILABLE` are business rejections, not results: they use the error envelope with status `409` below.
 
 Client and authorization errors:
 
@@ -604,7 +645,8 @@ Client and authorization errors:
 - `RESOURCE_NOT_FOUND` (`404`)
 - `IDEMPOTENCY_CONFLICT`, `INVALID_STATE_TRANSITION` (`409`)
 - `REGISTRATION_NOT_OPEN`, `REGISTRATION_CLOSED`, `SESSION_CANCELLED`, `EVENT_CANCELLED` (`409`)
-- `PARTICIPATION_EXPIRED`, `SESSION_STARTED`, `CAPACITY_BELOW_OCCUPIED` (`409`)
+- `PARTICIPATION_EXPIRED`, `SESSION_STARTED`, `CAPACITY_BELOW_OCCUPIED`, `SCHEDULE_FROZEN` (`409`)
+- `EMAIL_ALREADY_REGISTERED` (`409`)
 - `WAITLIST_REQUIRED`, `DIRECT_BOOKING_AVAILABLE`, `REFRESH_ALREADY_ROTATED` (`409`)
 - `RATE_LIMITED` (`429`, with `Retry-After`)
 
@@ -628,11 +670,11 @@ The OpenAPI components use these stable shapes; implementation may add read-only
 - `SessionCreate`: `name`, `time_zone`, `registration_opens_at`, `registration_closes_at`, `starts_at`, `ends_at`, and positive integer `capacity`.
 - `SessionPatch`: the same fields, subject to publication and participation-freeze rules; unknown fields are rejected.
 - `CancelRequest`: nonblank `reason` from 1–500 characters for management cancellation; attendee self-cancellation has no free-text reason.
-- `AdminAccountPatch`: optional `role`, optional `disabled`, and required nonblank `reason`; at least one change is required.
+- `AdminAccountPatch`: optional `role` (`ATTENDEE` or `ORGANIZER` only), optional `disabled`, and required nonblank `reason`; at least one change is required.
 - `ConfirmRequest`: exactly one `simulation_result` enum and no payment fields.
 - Booking, waitlist join, decline, leave, and attendee cancellation have empty JSON bodies.
 
-`SessionView` includes status and times, IANA zone, capacity, `occupied_count`, `available_count`, `waitlist_count`, registration status, and `version`. `ParticipationView` includes IDs, state, queue position only while actively waitlisted, allocation and confirmation timestamps, absolute deadline, terminal reason, owning session summary, and session version. `RosterView` contains the categorized snapshot described in Section 8.3. Every write schema rejects unknown fields.
+`SessionView` includes status, cancellation time and reason, times, IANA zone, capacity, `occupied_count`, `available_count`, `waitlist_count`, registration status, and `version`. `ParticipationView` includes IDs, state, queue position only while actively waitlisted, allocation and confirmation timestamps, absolute deadline, terminal reason, owning session summary, and session version. `RosterView` contains the categorized snapshot described in Section 8.3. Every write schema rejects unknown fields.
 
 The contract tests freeze required fields, enum values, authorization, idempotency requirement, response status, and result code for every route. A generated-client diff is reviewed like a source change.
 
@@ -829,13 +871,51 @@ Before private delivery, the gateway verifies that the account remains enabled a
 
 ### 10.3 Publication
 
-After a transaction commits, the API or worker publishes:
+`realtime/publisher.py` runs only after the transaction has committed. Services never call it. The caller is the route handler or the worker loop, and it passes every `SessionChange` that one commit returned.
 
-- A public session invalidation when availability, queue count, capacity, or status changes.
-- A private participation invalidation for each affected account.
-- A management invalidation for authorized organizer views.
+`SessionChange` is defined in `app/schemas/realtime.py` so a service can return it without importing `app.realtime`. It is an internal result, not a WebSocket message, and it has no contract fixture.
 
-Publication is best-effort and bounded by a short timeout. Failure increments a metric and is logged with the correlation ID. There is no database outbox in the baseline; 60-second reconciliation and reconnect reads close the notification gap.
+| Field | Meaning |
+| --- | --- |
+| `event_id` | Parent event. |
+| `session_id` | Session whose version this commit advanced. |
+| `version` | `event_sessions.version` after this commit. |
+| `cause` | Operation that started the transaction. One of the closed values below. It is not sent on the wire. |
+| `transitions` | Participation state changes written by this transaction. Empty when the session changed and no participation did. |
+
+Each transition has `participation_id`, `account_id`, and `reason`. That `reason` is a `participation.changed` value from Section 10.1. The publisher copies it onto the private message and does not derive it from `cause`. Offers created in the same transaction, and waiters ended as ineligible, are further transitions on the same `SessionChange`.
+
+`None`, or an empty list, means no session version changed. The caller does not call the publisher, and nothing is written to Redis.
+
+| `cause` | `session.changed` reason | `management.changed` reason |
+| --- | --- | --- |
+| `booking_hold` | `participation_changed` | `roster_changed` |
+| `waitlist_join` | `participation_changed` | `roster_changed` |
+| `confirmation` | `participation_changed` | `roster_changed` |
+| `attendee_release` | `participation_changed` | `roster_changed` |
+| `admin_participation_cancel` | `participation_changed` | `roster_changed` |
+| `expiration` | `participation_changed` | `roster_changed` |
+| `promotion` | `participation_changed` | `roster_changed` |
+| `registration_closed` | `registration_closed` | `roster_changed` |
+| `capacity_changed` | `capacity_changed` | `session_updated` |
+| `session_published` | `session_published` | `session_updated` |
+| `event_published` | `session_published` | `event_updated` |
+| `session_cancelled` | `session_cancelled` | `session_updated` |
+| `event_cancelled` | `event_cancelled` | `event_updated` |
+
+`attendee_release` covers cancel, decline, and leave. `promotion` is only the worker scan that promotes and does nothing else. Promotion inside another transaction keeps that transaction's `cause`. `event_published` and `event_cancelled` are the event-level transactions; each affected session is one `SessionChange`, and all of them share that `cause`.
+
+From one call the publisher emits the messages already required by Section 10.5:
+
+- One `session.changed` per `SessionChange`, carrying that element's `version` and the session reason of its `cause`.
+- One `participation.changed` per transition, on that account's channel.
+- One `management.changed` for the call. Its reason comes from `cause`, and its `sessions` list contains every element of the call. Every element of one call has the same `cause`.
+
+WebSocket messages keep the field name `reason`. `cause` is only the publisher's input.
+
+Two commits in Section 10.5 do not produce a `SessionChange`. After an event-field edit, the same publisher module sends `management.changed` with reason `event_updated` and an empty `sessions` list. After an account is disabled, it sends `auth.revoked`. Both run after commit.
+
+Publication is best-effort and bounded by a short timeout. Failure increments a metric and is logged with the correlation ID. A failure does not stop the remaining messages of the same call. There is no database outbox in the baseline; 60-second reconciliation and reconnect reads close the notification gap.
 
 ### 10.4 Frontend state
 
@@ -876,6 +956,14 @@ Every name starts with `seatflow:v1:`. A change that alters the meaning or forma
 
 - `{window}` is the Unix time in seconds divided by 60 and rounded down. Rate limiting is a fixed one-minute window: the API increments the counter, sets the expiry when the counter is new, and rejects the request when the count exceeds the configured limit. `Retry-After` is the number of seconds left in the window. A fixed window can admit up to twice the limit across a window boundary; this is accepted because the limit protects capacity and is not a correctness rule. The in-process fallback used during Redis loss applies the same windows.
 - `{ip}` is the normalized address text from Section 9.5. Keys are built and never parsed, so the colons in an IPv6 address are harmless.
+- `scopes` holds the values below. The API grants them from the caller's current account when it issues the ticket; the gateway enforces them as Section 10.2 describes.
+
+  | Scope | Granted to | Allows channels |
+  | --- | --- | --- |
+  | `public` | Every caller, anonymous included | `session:{session_id}` |
+  | `account` | An authenticated, enabled account | `me:participations` |
+  | `management` | A current `ORGANIZER` or `ADMIN` | `event:{event_id}:management`, after the per-event ownership or administrator check on subscribe |
+
 - `{digest}` is the lowercase hexadecimal SHA-256 digest of the ticket. The API writes the key only if it does not exist. The gateway reads and deletes it in one atomic command, which makes the ticket single-use across gateway replicas.
 
 **Pub/Sub channels**
@@ -893,7 +981,7 @@ Every name starts with `seatflow:v1:`. A change that alters the meaning or forma
 
 **Publication matrix**
 
-The process that commits a transaction publishes its messages after the commit, whether that process is the API or a worker. The reason depends on the transition and not on the process.
+The process that commits a transaction publishes its messages after the commit, whether that process is the API or a worker. The input is the `SessionChange` list defined in Section 10.3. The reason depends on `cause` and on each transition, not on which process committed.
 
 - Every committed transaction that increments a session's version publishes exactly one `session.changed` carrying the new version, with the reason of the operation that started the transaction. This is a superset of the public rule in Section 10.3: a confirmation changes neither availability nor queue count but still publishes, so that versions seen by a subscriber are contiguous and a gap always means a lost message.
 - The same transaction publishes one `participation.changed` for each participation whose state it changed, on the owner's account channel.
@@ -928,7 +1016,7 @@ Messages are published in the order public, private, then management. Each publi
 Phase 1 implements this section once, and no other module spells out a Redis name or message body by hand:
 
 - `app/core/redis_keys.py` holds one function per key and channel in the tables above.
-- `app/schemas/realtime.py` holds one Pydantic model per message type and one enum per `reason` list in Section 10.1.
+- `app/schemas/realtime.py` holds one Pydantic model per message type, one enum per `reason` list in Section 10.1, and the `SessionChange` result from Section 10.3. Contract fixtures cover the WebSocket messages only.
 - `tests/contract/fixtures/` holds one JSON example per message type. A contract test validates every fixture against its model and asserts the exact strings the name functions return.
 
 ## 11. Worker design and recovery
@@ -944,11 +1032,15 @@ Scans run every second by default:
 
 Candidate selection does not grant authority to mutate. For each candidate, the worker starts a new transaction, invokes the common lock entry point, reloads state, reads database time, and either applies one valid transition or does nothing. Expiration and closure transactions promote eligible waiters when registration remains open.
 
+The expiry scan groups candidates by session. One transaction takes the session lock, reads database time once, and expires every overdue `HELD` and `OFFERED` attempt of that session, then promotes, so the session version advances once and one `SessionChange` describes all of them. Worker transitions record a null `actor_id`.
+
 At registration close, the worker changes outstanding `HELD` and `OFFERED` rows to `EXPIRED` with their corresponding expiration reason, changes `WAITLISTED` rows to `CANCELLED` with `REGISTRATION_CLOSED`, and leaves `CONFIRMED` rows unchanged. It issues no new offers at or after close. Each transition retains history and increments the session version.
 
 Multiple workers may scan concurrently. Batches may distribute independent sessions with `SKIP LOCKED`, but promotion inside one session always reads the true lowest eligible `queue_seq`.
 
 On shutdown, workers stop taking candidates and finish or roll back active transactions within the Kubernetes termination grace period. On restart, all work is rediscovered from PostgreSQL; no in-process timer or Redis message is required.
+
+Each scan loop sets `worker_last_scan_timestamp_seconds` when a pass finishes without a dependency failure, including a pass that found no candidates (Section 14). A dependency failure leaves the previous value in place. The worker serves this metric, and its health endpoints, on `WORKER_METRICS_PORT` (Sections 13.3 and 13.5).
 
 ## 12. Failure behavior
 
@@ -1032,13 +1124,27 @@ Gateway policy sets a 30-second timeout for routine REST requests. The WebSocket
 
 ### 13.3 Health and lifecycle
 
+The API and the WebSocket gateway serve these paths on their HTTP port:
+
 - `/health/live`: process event loop is responsive; it does not query dependencies.
 - `/health/ready`: required startup and dependency checks pass for that component.
 - `/metrics`: Prometheus endpoint, internal only.
 
-Readiness fails when PostgreSQL is unavailable for API or workers. Redis loss marks degraded status in metrics but does not remove API Pods from service because core writes remain valid. The WebSocket gateway may fail readiness if it cannot consume Redis.
+The worker is `python -m app.workers`, not the FastAPI application. It serves the same three paths on `WORKER_METRICS_PORT` (Section 13.5). That port is cluster-internal. No Gateway route publishes it.
 
-Deployments use rolling updates, startup probes, bounded termination grace periods, and resource requests and limits. API and WebSocket Deployments start with 1–3 replicas and a 60% CPU HPA target, then are adjusted from measured behavior.
+Worker Pod probes use that port:
+
+| Probe | Path | Succeeds when | Does not check |
+| --- | --- | --- | --- |
+| Liveness | `/health/live` | The process answers. | PostgreSQL, Redis, and scan age. A stalled scan must not restart the Pod. |
+| Readiness | `/health/ready` | PostgreSQL accepts a trivial query. | Redis. Section 12 keeps scanning and promotion running without Redis; publication failure stays a metric. |
+| Startup | `/health/ready` | The same readiness check, so a slow first database connection is not a restart. | Redis and scan age. |
+
+Prometheus scrapes each worker Pod at `WORKER_METRICS_PORT` and path `/metrics`. A worker that has stopped scanning stays Ready as long as the process and PostgreSQL are up. The gauge and alert in Section 14 report that condition. Liveness and readiness do not.
+
+Readiness fails when PostgreSQL is unavailable for the API or for workers. Redis loss marks degraded status in metrics but does not remove API or worker Pods from service, because core writes and scans remain valid. The WebSocket gateway may fail readiness if it cannot consume Redis.
+
+Worker Deployments use the probe table above. API and WebSocket Deployments probe the same paths on their own HTTP port: liveness hits `/health/live`, and readiness and startup hit `/health/ready`. All Deployments use rolling updates, bounded termination grace periods, and resource requests and limits. API and WebSocket Deployments start with 1–3 replicas and a 60% CPU HPA target, then are adjusted from measured behavior.
 
 ### 13.4 Connection budget
 
@@ -1078,6 +1184,7 @@ All processes read configuration from environment variables through `app/core/co
 | `REFRESH_TOKEN_TTL_SECONDS` | `604800` | API | Absolute refresh-token lifetime (Section 9.1). |
 | `WORKER_SCAN_INTERVAL_SECONDS` | `1` | Workers | Delay between scans (Section 11). |
 | `WORKER_SCAN_BATCH_SIZE` | `100` | Workers | Candidates taken per scan. The default is a starting value to be adjusted from load tests. |
+| `WORKER_METRICS_PORT` | `9100` | Workers | Port of the worker HTTP server for `/health/live`, `/health/ready`, and `/metrics` (Section 13.3). Not the API port. |
 | `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` | None; password is secret | Bootstrap command | First administrator account. The application processes do not read them. |
 
 The gateway needs no signing key: it authenticates connections through Redis tickets, which carry the account ID and access-token expiry. It reads PostgreSQL only for the account-state and ownership checks in Section 10.2.
@@ -1102,6 +1209,7 @@ Minimum application metrics:
 - `worker_candidates_total`
 - `worker_overdue_items`
 - `worker_oldest_overdue_seconds`
+- `worker_last_scan_timestamp_seconds`
 - `waitlist_promotion_latency_seconds`
 - `capacity_violations`
 - `db_pool_connections`
@@ -1113,10 +1221,12 @@ Minimum application metrics:
 
 Labels use bounded values such as service, operation, outcome, and error code. Account, participation, event, session, request, and correlation IDs belong in logs, not metric labels.
 
+`worker_last_scan_timestamp_seconds` is a gauge, one series per scan loop. Its label `scan` is `expiry`, `closure`, `promotion`, or `invariant`. The value is the Unix time of the last pass that finished without a dependency failure. `worker_oldest_overdue_seconds` measures due rows that are still waiting. It does not say whether the loop is still running.
+
 Grafana dashboards cover:
 
 - API traffic, latency, unexpected errors, and business outcomes.
-- Occupancy correctness, expiry backlog, and promotion latency.
+- Occupancy correctness, expiry backlog, promotion latency, and worker scan freshness.
 - PostgreSQL connections, transaction latency, locks, and storage.
 - Redis availability, memory, and operation errors.
 - WebSocket connections, publication failures, and reconnects.
@@ -1126,6 +1236,7 @@ Required alerts:
 
 - Any `capacity_violations > 0`: immediate critical alert.
 - Oldest overdue item above 30 seconds for 1 minute.
+- A Ready worker whose `worker_last_scan_timestamp_seconds` series is missing, or older than 30 seconds, for 1 minute. The Pod is up and PostgreSQL is reachable, but that scan loop has stopped. A PostgreSQL outage is the readiness failure, not this alert.
 - Unexpected `5xx` ratio above 5% for 5 minutes.
 
 Alert delivery is tested with safe synthetic metrics or fault injection, never by deliberately overbooking.

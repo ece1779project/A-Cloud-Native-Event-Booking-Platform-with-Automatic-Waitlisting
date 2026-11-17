@@ -2,7 +2,8 @@
 
 A service owns one transaction: it calls ``app.db.locks``, applies the
 rules in ``app.domain``, writes state, history and the idempotency receipt,
-and builds the response before the transaction exits. It returns the
+and builds the response before the transaction exits. Shared participation
+queries and low-level writes come from ``app.db.participation_store``. It returns the
 committed result together with the invalidations to publish.
 
 Services are called by route handlers and by workers and know nothing about
