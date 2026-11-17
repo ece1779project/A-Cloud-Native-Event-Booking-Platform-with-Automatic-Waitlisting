@@ -1,10 +1,12 @@
 # Database design specification
 
 Cloud-Native Event Booking Platform with Automatic Waitlisting  
-Design version 1.3 · 16 November 2026 · Proposed schema for PRD 1.2  
+Design version 1.4 · 16 November 2026 · Proposed schema for PRD 1.2  
 Requirements source: [Product requirements document](PRD.md) · Implementation design: [Technical design document](TECHNICAL_DESIGN.md)
 
 Terms follow the PRD's terminology table. "Session" always means an event session. A SQLAlchemy session is written `AsyncSession`. Attendees cancel a hold or confirmed booking, decline an offer and leave the waitlist; all three end in `CANCELLED`.
+
+Changes in 1.4: the session version is incremented once per transaction by its owner; system transitions record a null `actor_id`; disabled waiters end with `ACCOUNT_DISABLED`; overdue attempts of one session expire in one transaction (sections 2.4 and 4).
 
 Changes in 1.3: section 2.6 documents the database triggers that the second migration added.
 
@@ -108,7 +110,7 @@ CREATE UNIQUE INDEX uq_participations_queue_seq
 | `participation_id`, `change_no` | uuid, integer | Composite primary key. The ID references the attempt. Number its transitions consecutively from 1. |
 | `from_state`, `to_state` | text, text | Previous and new participation states. Only the first transition has a null source state. |
 | `occurred_at`, `reason_code` | timestamptz, text | Database transition time and cause. Use `BOOKED`, `ENQUEUED`, `PROMOTED`, `PAYMENT_CONFIRMED` or a terminal reason from section 3. |
-| `actor_id`, `correlation_id` | uuid nullable, uuid | FK to the initiating account, null for a worker. The correlation ID groups changes from one operation. |
+| `actor_id`, `correlation_id` | uuid nullable, uuid | FK to the initiating account. Null for every system transition: promotion, expiration and closure, including a promotion inside an attendee's or administrator's command. The correlation ID groups changes from one operation. |
 
 Append the transition under the session lock, in the transaction that writes the new state. A failed simulated payment has a request result but no state transition.
 
@@ -230,7 +232,7 @@ After all potentially blocking locks, read `clock_timestamp()` immediately befor
 
 ### Command rules
 
-Every command below runs after the locks and clock read described above. Every transaction that changes a participation, the capacity or a status increments the session's `version`.
+Every command below runs after the locks and clock read described above. Every transaction that changes a participation, the capacity or a status increments the session's `version` exactly once, after all steps and before commit. The transaction owner does this; the promote and expire steps never commit or increment it themselves.
 
 **Book or join**
 
@@ -255,12 +257,12 @@ Every command below runs after the locks and clock read described above. Every t
 
 **Promote**
 
-Promotion runs inside any transaction that frees a seat or raises capacity, since that transaction already holds the session lock. The worker scan in section 5 runs the same steps for seats freed by expiry and as a safety net.
+Promotion runs inside any transaction that frees a seat or raises capacity, since that transaction already holds the session lock. The worker scan in section 5 runs the same steps for seats freed by expiry and as a safety net. The expiry scan expires every overdue hold and offer of one session in a single transaction.
 
 1. Recheck that registration is open and a seat is free.
 2. Read the lowest `queue_seq` still in `WAITLISTED`.
 3. Take a shared lock on that account and check its eligibility.
-4. End an ineligible entry with its reason, or issue one offer and stamp its deadline.
+4. End a disabled account's entry as `CANCELLED` with `ACCOUNT_DISABLED`, end another ineligible entry with `INELIGIBLE`, or issue one offer and stamp its deadline. Record a null `actor_id`.
 5. Repeat while seats and waiters remain, up to 20 offers per transaction. The worker scan picks up any remainder.
 
 Never use `SKIP LOCKED` to select attendees within a session. Promotion locks queue-head accounts after the caller's account, outside ascending ID order. This cannot deadlock, because promotion takes only shared account locks and each role or disablement change takes exactly one exclusive account lock.
@@ -269,7 +271,7 @@ Never use `SKIP LOCKED` to select attendees within a session. Promotion locks qu
 
 1. Stamp `disabled_at` and insert the audit action atomically.
 2. Pending allocations expire on their original deadlines.
-3. Workers skip disabled waiters and record why.
+3. Promotion ends a disabled queue head as `CANCELLED` with `ACCOUNT_DISABLED` and continues with the next waiter.
 4. A confirmed booking keeps its seat until a separate, explicit administrative cancellation.
 
 **Cancel event or session**

@@ -1,8 +1,10 @@
 # Technical Design Document: Cloud-Native Event Booking Platform
 
-Version: 1.2  
+Version: 1.3  
 Date: 2026-11-16  
 Status: Proposed target design; implementation pending
+
+Changes in 1.3: the transaction owner increments the session version once, after every step and before commit (Sections 6.3 and 7). Commands on an existing participation first apply `expire_if_overdue` and `end_waiting_if_closed`, and the operations that run `promote_waiters` are listed (Sections 7.3 and 7.4). System transitions record a null `actor_id`, disabled waiters end as `CANCELLED` with `ACCOUNT_DISABLED`, and all overdue attempts of one session are handled in one transaction (Sections 7.4 and 11).
 
 Changes in 1.2: a command that advances a session version returns `SessionChange`, and the publisher accepts that value after commit (Sections 5.2 and 10.3). The worker process serves health and metrics on `WORKER_METRICS_PORT`, and a gauge records the last completed scan (Sections 13.3, 13.5, and 14).
 
@@ -375,6 +377,8 @@ This table must be included in the first Alembic revision.
 - Use `clock_timestamp()` after all blocking locks for registration and deadline decisions.
 - Never use browser time, API process time, or PostgreSQL transaction-start `now()` to decide whether a hold can confirm.
 - Increment `event_sessions.version` in every committed transaction that changes capacity, status, or any participation in the session.
+- The transaction owner (Section 5.2) increments the version exactly once per session per transaction, after all business steps and immediately before commit. Helper steps such as `promote_waiters`, `expire_if_overdue`, and `end_waiting_if_closed` neither commit nor increment the version. A transaction that changes nothing leaves the version unchanged and returns `None`.
+- Publication of the resulting `SessionChange` happens only after commit (Section 10.3).
 - Include `session_version` in session reads, participation reads, command results, and real-time events.
 
 ## 7. Transaction and concurrency design
@@ -423,6 +427,13 @@ Joining the waitlist under the same lock:
 
 Confirmation locks the session and attempt, then reads database time. If `t >= deadline_at`, it first expires the attempt and promotes from the queue in the same transaction; confirmation returns `PARTICIPATION_EXPIRED`. Otherwise a successful simulation changes `HELD` or `OFFERED` to `CONFIRMED` without changing occupancy. A simulated failure changes no participation state and leaves the original deadline intact.
 
+Every command on an existing participation (confirm, cancel, decline, leave, and administrator cancel) runs two steps from `services/expiration.py` after the locks and clock read and before its own validation:
+
+1. `expire_if_overdue`: a `HELD` or `OFFERED` attempt whose deadline has passed becomes `EXPIRED` with `HOLD_EXPIRED` or `OFFER_EXPIRED`.
+2. `end_waiting_if_closed`: a `WAITLISTED` entry in a session whose registration has closed becomes `CANCELLED` with `REGISTRATION_CLOSED`.
+
+The command then validates against the resulting state, so an attendee acting late meets the same outcome the worker would have written.
+
 The worker follows the same lock path. A stale expiry candidate becomes a no-op. The session lock ensures that confirmation and expiration cannot both win.
 
 ### 7.4 Cancellation, capacity changes, and promotion
@@ -435,8 +446,23 @@ Any transaction that frees a seat or increases capacity promotes waiters before 
 4. End an ineligible entry with a recorded reason, or change it to `OFFERED`.
 5. After that account lock, sample `clock_timestamp()` and recheck registration time.
 6. Set `allocated_at` to that database time and set `deadline_at` to the earlier of ten minutes later and registration close.
-7. Increment the session version for every transaction that changes the queue or occupancy.
+7. Leave the version increment to the transaction owner, which increments it once before commit (Section 6.3).
 8. Repeat for available seats, up to 20 offers per transaction, obtaining a fresh database time after each new blocking account lock.
+
+These operations call `services/promotion.py::promote_waiters` before commit:
+
+- Attendee cancel of a hold or confirmed booking, and decline of an offer.
+- Administrator cancel of a participation.
+- A capacity increase.
+- A confirmation that finds its attempt overdue and expires it (Section 7.3).
+- Expiration and closure transactions while registration remains open, and the worker promotion scan (Section 11).
+
+Leaving the waitlist frees no seat and does not promote.
+
+Promotion rules:
+
+- A history row written by promotion, expiration, or closure has a null `actor_id`. Only a transition requested by an account records that account; a promotion inside an attendee's or administrator's command still records null for the promoted entry.
+- A queue-head account that is disabled ends as `CANCELLED` with reason `ACCOUNT_DISABLED`; promotion then continues with the next entry. Other ineligible entries end with `INELIGIBLE`.
 
 Do not use `SKIP LOCKED` to choose attendees within one session. It may be used only to distribute independent scan candidates across sessions. Capacity reductions are rejected below current occupancy. Existing waiters are promoted before new arrivals can directly book.
 
@@ -1005,6 +1031,8 @@ Scans run every second by default:
 4. The capacity-invariant query used for alerting.
 
 Candidate selection does not grant authority to mutate. For each candidate, the worker starts a new transaction, invokes the common lock entry point, reloads state, reads database time, and either applies one valid transition or does nothing. Expiration and closure transactions promote eligible waiters when registration remains open.
+
+The expiry scan groups candidates by session. One transaction takes the session lock, reads database time once, and expires every overdue `HELD` and `OFFERED` attempt of that session, then promotes, so the session version advances once and one `SessionChange` describes all of them. Worker transitions record a null `actor_id`.
 
 At registration close, the worker changes outstanding `HELD` and `OFFERED` rows to `EXPIRED` with their corresponding expiration reason, changes `WAITLISTED` rows to `CANCELLED` with `REGISTRATION_CLOSED`, and leaves `CONFIRMED` rows unchanged. It issues no new offers at or after close. Each transition retains history and increments the session version.
 
