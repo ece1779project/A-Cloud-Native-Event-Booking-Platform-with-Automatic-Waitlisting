@@ -94,7 +94,9 @@ Each step returns `ParticipationTransition.of(row)` for every row it changed. `c
 
 Every test ends with `capacity_violations(db) == []`.
 
-## 5. Phase 3: worker process and race tests
+## 5. Phase 3: worker process and race tests (done)
+
+Status, 2026-11-17: implemented and passing (75 tests in the suite, `ruff check` clean, concurrency tests stable over five repeated runs). A smoke run of `python -m app.workers` against the test database expired a seeded hold, offered the seat, reported a capacity violation and stopped cleanly on `SIGTERM`. Changes from the original plan, reflected below: a scan opens its own read transaction, so `find_candidates(limit)` takes no `db` and the runner never touches the database; the runner exposes `run_scan_once` for tests; the invariant scan does its work in `find_candidates` and returns no candidates; candidate outcomes are `changed`, `noop`, `busy` and `error`; factory `minutes` accepts fractions for second-scale deadlines.
 
 ### 5.1 Metrics
 
@@ -104,7 +106,7 @@ Promotion latency: inside `expire_session`, after the steps, read each expired r
 
 ### 5.2 `app/workers/runner.py`
 
-A `Scan` has a `name`, `find_candidates(db, limit)` and `process(candidate) -> SessionChange | None`. `run_scan_loop(scan, *, session_factory, interval, batch_size, stop, publish)` does this each cycle: read candidates in a short read-only transaction; process them one at a time; pass each non-`None` result to `publish`; set the last-scan gauge; wait for the rest of the interval or for `stop`.
+A `Scan` has a `name`, `find_candidates(limit)` (which opens its own short read transaction) and `process(candidate) -> SessionChange | None`. `run_scan_once(scan, *, batch_size, publish, stop=None)` is one pass: read candidates, process them one at a time, pass each non-`None` result to `publish`, record the duration and set the last-scan gauge. `run_scan_loop(scan, *, interval, batch_size, stop, publish=publish_nothing, max_backoff=30)` repeats passes and waits for the rest of the interval or for `stop`.
 
 A failing candidate is logged, counted with `outcome="error"`, and skipped; a lock or statement timeout (`is_retryable_timeout`) counts as `outcome="busy"` and is retried next cycle. A failing candidate query is a dependency failure: back off exponentially to 30 seconds and leave the gauge unchanged. A `publish` failure is logged and never stops the loop.
 
@@ -115,17 +117,17 @@ Each holds a candidate query and a call to one transaction owner.
 - `expiry.py`: distinct session IDs with a due `HELD` or `OFFERED` row, oldest deadline first, limited to the batch. The same query sets `worker_overdue_items` and `worker_oldest_overdue_seconds`.
 - `closure.py`: `PUBLISHED` sessions with `closes_at <= now` that still have `HELD`, `OFFERED` or `WAITLISTED` rows.
 - `promotion.py`: open published sessions with a waiter and occupancy below capacity. This is the safety net for more than 20 freed seats and for any missed call site.
-- `invariant.py`: runs `capacity_violations`, sets the gauge, and logs each offending session at error level. It returns no change.
+- `invariant.py`: runs `capacity_violations` inside `find_candidates`, sets the gauge, logs each offending session at error level, and returns no candidates.
 
 ### 5.4 `app/workers/__main__.py` and Compose
 
 Load settings, create the engine and session factory, call `logging.basicConfig` (switch to `core/logging.py` when it exists), build the four scans, and run their loops as tasks with a no-op `publish`. On `SIGTERM` or `SIGINT`, set `stop`, let the current transactions finish, and exit within 20 seconds. Keep `main()` a flat list of tasks so Yifeng can add the health server as one more task.
 
-Add a `worker` service to `compose.yaml`: same image, `command: ["/app/.venv/bin/python", "-m", "app.workers"]`, depends on `migrate` completing. No port and no healthcheck yet; those come with Yifeng's server.
+Add a `worker` service to `compose.yaml`: same image, `command: ["/app/.venv/bin/python", "-m", "app.workers"]`, depends on `migrate` completing. No port and no healthcheck yet; those come with Yifeng's server, at the `TODO(Yifeng)` in `main()`. If one loop dies with an error, `main()` stops the others and exits non-zero so the supervisor restarts the process.
 
 ### 5.5 Tests
 
-`tests/unit/test_runner.py` with a fake scan: continues after a candidate error; backs off after a query error and leaves the gauge unchanged; sets the gauge after an empty pass; stops promptly on `stop`; calls `publish` once per non-`None` result.
+`tests/unit/test_runner.py` with a fake scan: continues after a candidate error; survives a publish failure; backs off after a query error and leaves the gauge unchanged; sets the gauge after an empty pass; stops promptly on `stop`, also between candidates; calls `publish` once per non-`None` result.
 
 `tests/integration/test_worker_scans.py`: each candidate query returns exactly the right sessions; one cycle of each scan clears a prepared backlog; the invariant scan reports a violation inserted through the factories.
 

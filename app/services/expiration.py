@@ -20,6 +20,7 @@ import uuid
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.core.metrics import PROMOTION_LATENCY
 from app.db.locks import LockedScope, lock_session_scope
 from app.db.participation_store import (
     attempts_in_states,
@@ -29,7 +30,12 @@ from app.db.participation_store import (
 )
 from app.domain.enums import EndReason, ParticipationState
 from app.models.participation import Participation
-from app.schemas.realtime import ChangeCause, ParticipationTransition, SessionChange
+from app.schemas.realtime import (
+    ChangeCause,
+    ParticipationChangedReason,
+    ParticipationTransition,
+    SessionChange,
+)
 from app.services.promotion import promote_waiters
 
 S = ParticipationState
@@ -154,19 +160,50 @@ async def expire_session(
     offer_validity_seconds: int,
 ) -> SessionChange | None:
     """Expire the session's overdue attempts and offer the freed seats, in one
-    transaction. ``None`` when nothing was due (a stale candidate)."""
+    transaction. ``None`` when nothing was due (a stale candidate).
+
+    Records promotion latency after the commit succeeds."""
     async with session_factory.begin() as db:
         scope = await lock_session_scope(db, session_id)
         correlation_id = uuid.uuid7()
-        changes = await expire_due(db, scope, correlation_id=correlation_id)
-        if changes:
-            changes += await promote_waiters(
-                db,
-                scope,
-                offer_validity_seconds=offer_validity_seconds,
-                correlation_id=correlation_id,
-            )
-        return await build_session_change(db, scope, ChangeCause.EXPIRATION, changes)
+        expired = await expire_due(db, scope, correlation_id=correlation_id)
+        if not expired:
+            return None
+        promoted = await promote_waiters(
+            db,
+            scope,
+            offer_validity_seconds=offer_validity_seconds,
+            correlation_id=correlation_id,
+        )
+        latencies = await _promotion_latencies(db, expired, promoted)
+        change = await build_session_change(
+            db, scope, ChangeCause.EXPIRATION, expired + promoted
+        )
+    for seconds in latencies:
+        PROMOTION_LATENCY.labels(cause=ChangeCause.EXPIRATION).observe(seconds)
+    return change
+
+
+async def _promotion_latencies(
+    db: AsyncSession,
+    expired: list[ParticipationTransition],
+    promoted: list[ParticipationTransition],
+) -> list[float]:
+    """Seconds from each freed seat's deadline to the offer that took it: offers
+    in queue order paired with the expired deadlines, earliest first. The rows
+    are already in the identity map, so ``db.get`` issues no query."""
+    deadlines = sorted(
+        [(await db.get(Participation, t.participation_id)).deadline_at for t in expired]
+    )
+    offered_at = [
+        (await db.get(Participation, t.participation_id)).allocated_at
+        for t in promoted
+        if t.reason == ParticipationChangedReason.OFFER_CREATED
+    ]
+    return [
+        (at - deadline).total_seconds()
+        for at, deadline in zip(offered_at, deadlines, strict=False)
+    ]
 
 
 async def close_session(

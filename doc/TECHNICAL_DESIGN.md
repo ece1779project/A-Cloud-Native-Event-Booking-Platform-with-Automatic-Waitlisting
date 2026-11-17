@@ -24,15 +24,17 @@ Requirement identifiers such as FR-04 and NFR-01 refer to the PRD.
 
 The following work remains to be implemented:
 
-- Business transactions built on the database layer: booking, confirmation, cancellation, promotion, and idempotency receipts.
+- Business transactions built on the database layer: booking, confirmation, cancellation, decline, leave, and idempotency receipts.
 - Account registration, authentication, authorization, and administration.
 - Event, session, booking, confirmation, cancellation, or waitlist APIs.
-- Expiration and promotion workers.
 - Redis rate limiting or post-commit notifications.
 - WebSocket gateway and frontend.
+- The worker's health and metrics server on `WORKER_METRICS_PORT`.
 - Kubernetes manifests, migration jobs, monitoring, dashboards, alerts, or load tests.
 
 The package skeleton in Section 5 is in place: every module exists with a statement of its responsibility. The database layer is implemented and tested: settings, the engine, the SQLAlchemy models, both Alembic revisions, the lock entry point, the participation store, and the `/health/live` and `/health/ready` endpoints. Compose runs the migration before it starts the API.
+
+Promotion and expiration are implemented and tested: the steps in `services/promotion.py` and `services/expiration.py` (Sections 7.3 and 7.4), the `SessionChange` result in `schemas/realtime.py` (Section 10.3), the four worker scans with their loop, shutdown and metrics (Sections 11 and 14), and a `worker` service in Compose. Workers publish nothing until the publisher exists.
 
 The remaining sections describe planned behavior rather than completed or measured results.
 

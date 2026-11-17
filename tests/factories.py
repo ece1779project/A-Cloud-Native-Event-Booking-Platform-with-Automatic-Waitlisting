@@ -93,7 +93,7 @@ async def make_session(
     return session
 
 
-def _allocation(minutes: int, overdue: bool) -> tuple[datetime, datetime]:
+def _allocation(minutes: float, overdue: bool) -> tuple[datetime, datetime]:
     """(allocated_at, deadline_at). An overdue allocation was made ten minutes
     ago and its deadline passed one minute ago."""
     now = datetime.now(UTC)
@@ -138,7 +138,7 @@ async def make_held(
     session: EventSession,
     account: Account,
     *,
-    minutes: int = 5,
+    minutes: float = 5,
     overdue: bool = False,
 ) -> Participation:
     allocated_at, deadline_at = _allocation(minutes, overdue)
@@ -178,7 +178,7 @@ async def make_offered(
     account: Account,
     queue_seq: int,
     *,
-    minutes: int = 10,
+    minutes: float = 10,
     overdue: bool = False,
 ) -> Participation:
     allocated_at, deadline_at = _allocation(minutes, overdue)

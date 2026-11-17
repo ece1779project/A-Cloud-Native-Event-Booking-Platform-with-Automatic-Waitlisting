@@ -29,6 +29,14 @@ services:
       retries: 5
       start_period: 5s
 
+  worker:
+    build: .
+    command: ["/app/.venv/bin/python", "-m", "app.workers"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
   postgres:
     image: postgres:18
     environment:
