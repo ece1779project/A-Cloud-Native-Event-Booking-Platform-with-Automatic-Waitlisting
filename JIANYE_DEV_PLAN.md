@@ -54,7 +54,9 @@ Every participation builder also writes its history: `BOOKED` for a hold, `ENQUE
 
 Extended `tests/integration/test_locks_and_store.py`: each target state gets the right fields and history row, and the trigger accepts the commit; an illegal transition or a misplaced `deadline_at` raises `ValueError` and writes nothing; `due_attempts` includes a row exactly at its deadline and excludes it a second earlier; `attempts_in_states` puts unqueued rows first. Added `tests/unit/test_session_change.py`: the enum values match the design, `REASON_BY_STATE` covers all six states one to one, and the models are frozen.
 
-## 4. Phase 2: promotion and expiration
+## 4. Phase 2: promotion and expiration (done)
+
+Status, 2026-11-17: implemented and passing (59 tests in the suite, `ruff check` clean). Changes from the original plan, all reflected below: the transaction owners take `offer_validity_seconds` instead of `settings`; the version helper is public as `build_session_change`; `ParticipationTransition.of(row)` builds a transition from a changed row; `expire_session` promotes only when something expired; promotion latency moves to Phase 3 with its metric; a shared `capacity_invariant` fixture in `tests/conftest.py` runs the invariant query after each test that opts in.
 
 ### 4.1 `app/services/promotion.py`
 
@@ -74,15 +76,15 @@ Steps, all using `scope.now` and a null actor:
 - `expire_due(db, scope, *, correlation_id)`: every row from `due_attempts`.
 - `close_registration(db, scope, *, correlation_id)`: due holds and offers expire with their own reasons, waiters end with `REGISTRATION_CLOSED`, confirmed rows stay, no promotion. Does nothing before `closes_at`.
 
-Transaction owners, each `async def name(session_factory, session_id, *, settings) -> SessionChange | None`:
+Transaction owners, each `async def name(session_factory, session_id, ...) -> SessionChange | None`:
 
-- `expire_session`: lock, `expire_due`, then `promote_waiters`, cause `expiration`.
+- `expire_session(..., *, offer_validity_seconds)`: lock, `expire_due`, then `promote_waiters` if anything expired, cause `expiration`.
 - `close_session`: lock, `close_registration`, cause `registration_closed`.
-- `promote_session`: lock, `promote_waiters`, cause `promotion`.
+- `promote_session(..., *, offer_validity_seconds)`: lock, `promote_waiters`, cause `promotion`.
 
-Each opens `session_factory.begin()`, calls `lock_session_scope`, creates one `uuid.uuid7()` correlation ID, runs its steps, and, only if transitions is non-empty, calls `bump_version` once and builds the `SessionChange`. An empty result returns `None` and leaves the version alone. A private `_finish(db, scope, cause, transitions)` holds that logic. Jiawei may copy or import it.
+Each opens `session_factory.begin()`, calls `lock_session_scope`, creates one `uuid.uuid7()` correlation ID, runs its steps, and, only if transitions is non-empty, calls `bump_version` once and builds the `SessionChange`. An empty result returns `None` and leaves the version alone. `build_session_change(db, scope, cause, transitions)` holds that logic; Jiawei can import it for his commands that change at least one participation.
 
-`expire_session` records promotion latency for each offer it creates, pairing offers in order with the expired deadlines sorted ascending, and observes the values only after the commit succeeds. Until Phase 3 adds the metric, keep the values in the return path's local scope and leave a TODO.
+Each step returns `ParticipationTransition.of(row)` for every row it changed. `close_registration` reuses `expire_if_overdue` and `end_waiting_if_closed` row by row, so a late attendee command and the worker write the same outcome.
 
 ### 4.3 Tests
 
@@ -97,6 +99,8 @@ Every test ends with `capacity_violations(db) == []`.
 ### 5.1 Metrics
 
 Run `uv add prometheus-client`. In `app/core/metrics.py`, append only the worker metrics from Section 14: `worker_scan_duration_seconds` (histogram, label `scan`), `worker_candidates_total` (counter, labels `scan` and `outcome`), `worker_overdue_items` and `worker_oldest_overdue_seconds` (gauges), `worker_last_scan_timestamp_seconds` (gauge, label `scan`), `waitlist_promotion_latency_seconds` (histogram, label `cause`), and `capacity_violations` (gauge). If a teammate changed `uv.lock` at the same time, resolve it by running `uv lock` again.
+
+Promotion latency: inside `expire_session`, after the steps, read each expired row's `deadline_at` and each new offer's `allocated_at` from the identity map (`db.get` issues no query), pair offers in order with the expired deadlines sorted ascending, and observe the differences with `cause="expiration"` only after the commit succeeds.
 
 ### 5.2 `app/workers/runner.py`
 

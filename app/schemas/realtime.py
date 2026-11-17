@@ -8,10 +8,14 @@ Design: TECHNICAL_DESIGN.md Sections 10.1, 10.3, and 10.5.
 
 import uuid
 from enum import StrEnum
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict
 
 from app.domain.enums import ParticipationState
+
+if TYPE_CHECKING:
+    from app.models.participation import Participation
 
 # Internal result: SessionChange (TECHNICAL_DESIGN 10.3)
 # Returned by the service that owns a transaction and passed to the publisher
@@ -66,6 +70,15 @@ class ParticipationTransition(BaseModel):
     participation_id: uuid.UUID
     account_id: uuid.UUID
     reason: ParticipationChangedReason
+
+    @classmethod
+    def of(cls, participation: Participation) -> ParticipationTransition:
+        """Describe a participation row right after its state changed."""
+        return cls(
+            participation_id=participation.id,
+            account_id=participation.account_id,
+            reason=REASON_BY_STATE[ParticipationState(participation.state)],
+        )
 
 
 class SessionChange(BaseModel):
