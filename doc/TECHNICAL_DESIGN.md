@@ -1,8 +1,10 @@
 # Technical Design Document: Cloud-Native Event Booking Platform
 
-Version: 1.3  
-Date: 2026-11-16  
+Version: 1.4  
+Date: 2026-11-17  
 Status: Proposed target design; implementation pending
+
+Changes in 1.4: an enabled account is the only eligibility rule in this release, so `INELIGIBLE` is reserved and unused (Section 7.4).
 
 Changes in 1.3: the transaction owner increments the session version once, after every step and before commit (Sections 6.3 and 7). Commands on an existing participation first apply `expire_if_overdue` and `end_waiting_if_closed`, and the operations that run `promote_waiters` are listed (Sections 7.3 and 7.4). System transitions record a null `actor_id`, disabled waiters end as `CANCELLED` with `ACCOUNT_DISABLED`, and all overdue attempts of one session are handled in one transaction (Sections 7.4 and 11).
 
@@ -462,7 +464,7 @@ Leaving the waitlist frees no seat and does not promote.
 Promotion rules:
 
 - A history row written by promotion, expiration, or closure has a null `actor_id`. Only a transition requested by an account records that account; a promotion inside an attendee's or administrator's command still records null for the promoted entry.
-- A queue-head account that is disabled ends as `CANCELLED` with reason `ACCOUNT_DISABLED`; promotion then continues with the next entry. Other ineligible entries end with `INELIGIBLE`.
+- A queue-head account that is disabled ends as `CANCELLED` with reason `ACCOUNT_DISABLED`; promotion then continues with the next entry. Other ineligible entries end with `INELIGIBLE`. In this release an enabled account is the only eligibility rule, so no entry ends with `INELIGIBLE`; the code is reserved for a later rule.
 
 Do not use `SKIP LOCKED` to choose attendees within one session. It may be used only to distribute independent scan candidates across sessions. Capacity reductions are rejected below current occupancy. Existing waiters are promoted before new arrivals can directly book.
 

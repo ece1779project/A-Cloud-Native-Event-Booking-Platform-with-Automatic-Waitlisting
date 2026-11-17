@@ -1,119 +1,165 @@
 # Development Plan: Waitlist and Workers (Jianye)
 
-Date: 2026-11-16 · Branch: `jianye/waitlist-and-workers` · Based on `main` at `5f0b297`
+Date: 2026-11-17 · Branch: `jianye/waitlist-and-workers` · Based on `main` at `3338979`
+
+This version replaces the 2026-11-16 plan. Step 0 of that plan is done: the team recorded the seams in TECHNICAL_DESIGN 1.3, DATABASE_DESIGN 1.4 and the ownership table in Project_Proposal Section 3.2. This plan follows those documents. Two doc edits made with this plan: worker metric definitions move to me because the scan loops set them (Yifeng keeps the worker HTTP server, probes and alerts), and `INELIGIBLE` is reserved because an enabled account is the only eligibility rule.
 
 ## 1. Where the project stands
 
-Implemented and tested on `main`: settings, the engine, all eight models, both migrations (including the triggers), the lock entry point `app/db/locks.py`, `app/db/participation_store.py`, the state machine in `app/domain/transitions.py`, the health endpoints, and Compose with `migrate`, `api`, `postgres` and `redis`.
+Already merged into `main`, with tests: settings (including `WORKER_METRICS_PORT`), the engine and `db_now`, all eight models, both migrations with their triggers, `db/locks.py`, `db/participation_store.py` (counts, queue head, position, queue number, `bump_version`, `record_change`, `capacity_violations`), `domain/enums.py`, `domain/transitions.py`, the health endpoints, and Compose with `migrate`, `api`, `postgres` and `redis`.
 
-Still docstring-only skeletons: every service, every worker, every route module, all schemas, `core/errors.py`, `core/metrics.py`, `core/logging.py`, `core/redis_keys.py`, `domain/timing.py`, the publisher and the gateway. No teammate branch on origin has unmerged work, so nothing of theirs can be built on yet.
+Still skeletons: every service, every worker, every route, all schemas, `domain/timing.py`, `core/errors.py`, `core/metrics.py`, `core/logging.py`, the publisher and the gateway. Jiawei has an unmerged `core/errors.py` on `origin/feat/database`; nothing here depends on it.
 
-## 2. What is mine
+## 2. Rules that keep this work from being redone
 
-The proposal gives me waitlist management, expiration handling, automatic offers, ordered promotion, idempotency and Redis/PostgreSQL consistency. Mapped to the repository:
+1. Import only merged code: `db`, `models`, `domain`, `core/config`, `core/constants`. Nothing I write before Jiawei's work lands imports `core/errors`, `services/idempotency`, `domain/timing`, auth or HTTP.
+2. Steps have the shape `step(db, scope, ..., *, correlation_id) -> list[ParticipationTransition]`. A step never commits, never bumps the version, never publishes and never raises an API error. Jiawei calls the same steps from his commands.
+3. Until `domain/timing.py` exists, `services/promotion.py` keeps two private helpers, `_registration_open` and `_offer_deadline`, with a comment to switch to `domain.timing`. Switching later is a two-line change. I do not write `timing.py`.
+4. Tests build rows with `tests/factories.py` and never go through the booking service.
+5. Publication is a callback passed to the worker loop, a no-op until Yifeng's publisher exists.
+6. Shared files (`participation_store.py`, `factories.py`, `compose.yaml`, `pyproject.toml`, `core/metrics.py`, `schemas/realtime.py`) change additively only, appended at the end of the file to keep merges clean.
+7. Phases 1 and 2 define the types and signatures Jiawei builds on, so they come first.
 
-- Mine, can start now: `domain/timing.py`, `services/promotion.py`, `services/expiration.py`, everything in `workers/`, the worker metrics, and their tests.
-- Mine, but blocked or shared: waitlist join, leave and decline (they need authentication, the response envelope, error codes and idempotency receipts), and `services/idempotency.py` (every one of Jiawei's commands calls it, so the owner must be settled first).
-- Not mine: authentication, events and sessions, booking, confirmation, cancellation (Jiawei); publisher, gateway, frontend, Kubernetes, monitoring stack (Yifeng).
+## 3. Phase 1: shared types and helpers
 
-## 3. Rules that keep this work from being redone
+### 3.1 `SessionChange` in `app/schemas/realtime.py`
 
-1. Depend only on merged code: the database layer and `domain`. Nothing below imports authentication, HTTP, schemas, error classes or Redis.
-2. Write business logic as in-transaction steps with the shape `step(db, scope, *, correlation_id, ...) -> list[Transition]`. A step never opens or commits a transaction, never bumps the session version and never publishes. A thin wrapper owns the transaction for the workers. If Jiawei chooses a different transaction convention, only the wrappers change.
-3. Tests build rows with `tests/factories.py` and never go through the booking service.
-4. Publication is a callback injected into the worker loop, with a no-op default until the publisher exists.
-5. Change shared files (`participation_store.py`, `factories.py`, `config.py`, `compose.yaml`, `pyproject.toml`) additively only.
+Write only this part of the file, as frozen Pydantic models, exactly as Section 10.3 defines it:
 
-## 4. Step 0: agree on the seams before coding
+- `ChangeCause` (StrEnum): `booking_hold`, `waitlist_join`, `confirmation`, `attendee_release`, `admin_participation_cancel`, `expiration`, `promotion`, `registration_closed`, `capacity_changed`, `session_published`, `event_published`, `session_cancelled`, `event_cancelled`.
+- `ParticipationChangedReason` (StrEnum): `hold_created`, `waitlist_joined`, `offer_created`, `confirmed`, `cancelled`, `expired`.
+- `REASON_BY_STATE`: a dict from the new `ParticipationState` to that reason. The mapping is one-to-one, so every service derives the reason the same way.
+- `ParticipationTransition`: `participation_id`, `account_id`, `reason`.
+- `SessionChange`: `event_id`, `session_id`, `version`, `cause`, `transitions` (a tuple, possibly empty).
 
-Send one short message to the team and wait for a yes on each point. These are the only places where my code touches theirs.
+Leave the other message models and reason enums to Yifeng. Add a short comment that the section above is the internal result and the section below is the wire contract.
 
-- Result type. Every service returns a `SessionChange` (Step 2). Jiawei's commands return the same type; Yifeng's publisher takes it as input.
-- One version bump per transaction. Section 10.5 requires contiguous versions, so the transaction owner bumps once, after all steps have run. Steps never bump.
-- Call sites in Jiawei's code. Every command on an existing participation first calls `expire_if_overdue` and `end_waiting_if_closed`. Cancel, decline, administrator cancel, a capacity increase and a confirmation that met an expired attempt all call `promote_waiters` before commit.
-- Ownership of `domain/timing.py` (I propose mine, since booking and promotion both need it), `services/idempotency.py`, and the join, leave and decline commands.
-- With Yifeng: how the worker Pod is probed and scraped. I propose `/metrics` on a new `WORKER_METRICS_PORT` plus a last-scan timestamp gauge.
+### 3.2 Additions to `app/db/participation_store.py`
 
-## 5. Work I can finish now
+- `transition(db, participation, to_state, *, reason_code, now, correlation_id, actor_id, deadline_at=None) -> None`. Raises `ValueError` when `can_transition` refuses, so a bug never reaches the trigger. Sets the fields the target state needs: `allocated_at` and `deadline_at` for `OFFERED`, `confirmed_at` for `CONFIRMED`, `ended_at` and `end_reason` for `CANCELLED` and `EXPIRED`. Then calls `record_change`. It decides nothing else.
+- `due_attempts(db, session_id, now) -> list[Participation]`: `HELD` and `OFFERED` rows with `deadline_at <= now`, ordered by `deadline_at, id`.
+- `attempts_in_states(db, session_id, states) -> list[Participation]`: ordered by `queue_seq NULLS FIRST, id`, used by closure.
 
-### Step 1: time rules
+Both reads use `populate_existing` like the existing queries.
 
-File: `app/domain/timing.py`. Add `RegistrationStatus` (`NOT_OPEN`, `OPEN`, `CLOSED`, matching `openapi.yaml`) to `app/domain/enums.py`.
+### 3.3 Additions to `tests/factories.py`
 
-Functions, all pure and all taking the database time as an argument: `registration_status(opens_at, closes_at, now)`; `registration_open(event_status, session_status, opens_at, closes_at, now)`, which also requires both statuses to be `PUBLISHED`; `effective_deadline(allocated_at, validity_seconds, registration_closes_at)`, the earlier of the two; `is_overdue(deadline_at, now)`, true when `now >= deadline_at`.
+`make_account(disabled=False)`; `make_session(status=..., window="open" | "closed" | "not_open")`; `make_held(overdue=False)`; `make_offered(queue_seq, overdue=False)`; `make_confirmed`. An overdue row is allocated ten minutes ago with a deadline one minute ago, which satisfies `deadline_at > allocated_at`. A closed window keeps `opens_at < closes_at <= starts_at`.
 
-Test: `tests/unit/test_timing.py`. Cover the inclusive open instant, the exclusive close instant, the deadline capped by registration close, and equality counting as overdue.
+### 3.4 Tests
 
-### Step 2: shared result type, transition helper, factories
+Extend `tests/integration/test_locks_and_store.py`: each legal transition writes the right fields and history row; an illegal one raises `ValueError` before any SQL; `due_attempts` includes a row exactly at its deadline and excludes one a second later. Add `tests/unit/test_realtime_change.py`: `REASON_BY_STATE` covers all six states, and the models are frozen.
 
-New file `app/domain/changes.py` with two frozen dataclasses. `Transition` holds `participation_id`, `account_id`, `from_state`, `to_state`, `reason_code`, `occurred_at` and `deadline_at`. `SessionChange` holds `event_id`, `session_id`, `version`, `cause` and a tuple of transitions. `cause` is a `ChangeCause` enum whose values are exactly the `session.changed` reasons in Section 10.1, so the publisher can use it verbatim.
+Include today's three doc edits in this phase.
 
-Additions to `app/db/participation_store.py`:
+## 4. Phase 2: promotion and expiration
 
-- `apply_transition(db, participation, to_state, *, reason, now, correlation_id, actor_id, deadline_at=None)` checks `can_transition`, sets the state and its timestamp fields, calls `record_change` and returns a `Transition`.
-- `overdue_attempts(db, session_id, now)` and `active_attempts(db, session_id, states)` return rows in a stable order.
-- `build_change(db, session, cause, transitions)` bumps the version once when the list is non-empty and returns the `SessionChange`; otherwise it returns `None`.
+### 4.1 `app/services/promotion.py`
 
-Additions to `tests/factories.py`: `make_offered`, `make_confirmed`, an `overdue=True` option (allocated ten minutes ago, deadline one minute ago, which still satisfies `deadline_at > allocated_at`), a `make_session` option for an already-closed registration window, and `make_account(disabled=True)`.
+`promote_waiters(db, scope, *, offer_validity_seconds, correlation_id) -> list[ParticipationTransition]`
 
-Tests: extend `tests/integration/test_locks_and_store.py` for the three new store functions, including an illegal transition being refused before it reaches the trigger.
+1. Read `session_counts` once. While occupied is below capacity and fewer than `MAX_OFFERS_PER_TRANSACTION` offers were made: take `queue_head`; stop if none.
+2. `lock_queue_head_account` and use the fresh `now` it returns. Recheck that registration is open at that time (both statuses `PUBLISHED`, `opens_at <= now < closes_at`); stop if not.
+3. A disabled account: `CANCELLED` with `ACCOUNT_DISABLED`, null actor; continue with the next head.
+4. Otherwise: `OFFERED`, `allocated_at = now`, `deadline_at = min(now + validity, closes_at)`, reason `PROMOTED`, null actor. Count the seat as occupied and loop.
 
-Open this as its own small pull request and merge it early, so Jiawei builds on the same types.
+### 4.2 `app/services/expiration.py`
 
-### Step 3: promotion
+Steps, all using `scope.now` and a null actor:
 
-File: `app/services/promotion.py`.
+- `expire_if_overdue(db, scope, participation, *, correlation_id)`: a due `HELD` or `OFFERED` row becomes `EXPIRED` with `HOLD_EXPIRED` or `OFFER_EXPIRED`. Jiawei calls this first in confirm, cancel and admin cancel; I call it in decline.
+- `end_waiting_if_closed(db, scope, participation, *, correlation_id)`: a `WAITLISTED` row at or after `closes_at` becomes `CANCELLED` with `REGISTRATION_CLOSED`.
+- `expire_due(db, scope, *, correlation_id)`: every row from `due_attempts`.
+- `close_registration(db, scope, *, correlation_id)`: due holds and offers expire with their own reasons, waiters end with `REGISTRATION_CLOSED`, confirmed rows stay, no promotion. Does nothing before `closes_at`.
 
-`promote_waiters(db, scope, *, offer_validity_seconds, correlation_id)` is the in-transaction step. It reads the counts once, then loops while a seat is free: take `queue_head`, lock that account with `lock_queue_head_account`, and use the fresh time that lock returns to recheck that registration is open. If it is not, stop. A disabled account's entry ends as `CANCELLED` with `ACCOUNT_DISABLED` and the loop continues. Otherwise the entry becomes `OFFERED` with `allocated_at` set to that time and the deadline from `effective_deadline`. Stop after `MAX_OFFERS_PER_TRANSACTION` offers, and also after 50 queue heads examined, so a run of disabled accounts cannot stretch the transaction.
+Transaction owners, each `async def name(session_factory, session_id, *, settings) -> SessionChange | None`:
 
-`promote_session(session_factory, session_id, settings)` is the wrapper for the promotion scan: open a transaction, `lock_session_scope`, run the step, `build_change`, commit, return the change.
+- `expire_session`: lock, `expire_due`, then `promote_waiters`, cause `expiration`.
+- `close_session`: lock, `close_registration`, cause `registration_closed`.
+- `promote_session`: lock, `promote_waiters`, cause `promotion`.
 
-Tests in `tests/integration/test_promotion.py`: one seat goes to the lowest `queue_seq`; several seats go out in order; a disabled head is skipped with its reason and the next waiter gets the offer; nothing happens when there is no free seat, registration is closed, the session is a draft or the event is cancelled; the deadline is capped at registration close; 25 seats produce 20 offers and leave five; history rows carry `PROMOTED`, a null actor and the shared correlation ID; the version rises by exactly one.
+Each opens `session_factory.begin()`, calls `lock_session_scope`, creates one `uuid.uuid7()` correlation ID, runs its steps, and, only if transitions is non-empty, calls `bump_version` once and builds the `SessionChange`. An empty result returns `None` and leaves the version alone. A private `_finish(db, scope, cause, transitions)` holds that logic. Jiawei may copy or import it.
 
-### Step 4: expiration and closure
+`expire_session` records promotion latency for each offer it creates, pairing offers in order with the expired deadlines sorted ascending, and observes the values only after the commit succeeds. Until Phase 3 adds the metric, keep the values in the return path's local scope and leave a TODO.
 
-File: `app/services/expiration.py`.
+### 4.3 Tests
 
-In-transaction steps: `expire_if_overdue(db, scope, participation, *, correlation_id)` for Jiawei's commands; `end_waiting_if_closed(...)` for a late attendee action on a waiting entry; `expire_due(db, scope, *, correlation_id)`, which expires every overdue hold and offer in the locked session with `HOLD_EXPIRED` or `OFFER_EXPIRED`; `close_registration(db, scope, *, correlation_id)`, which expires holds and offers, ends waiters with `REGISTRATION_CLOSED`, leaves confirmed rows alone and never promotes.
+`tests/integration/test_promotion.py`: one seat goes to the lowest `queue_seq`; several seats go out in order; a disabled head ends with `ACCOUNT_DISABLED` and the next waiter is offered; nothing happens with no free seat, a closed window, a draft session or a cancelled event; the deadline is capped at `closes_at`; 25 free seats give 20 offers and leave five waiters; history rows carry `PROMOTED`, a null actor and one correlation ID.
 
-Wrappers: `expire_session(session_factory, session_id, settings)` runs `expire_due`, then `promote_waiters`, then `build_change`. `close_session(...)` runs `close_registration` with the cause `registration_closed`.
+`tests/integration/test_expiration.py`: an overdue hold and an overdue offer each expire with the right reason; a row not yet due is untouched; expiry and the next offer share one commit, one correlation ID and one version bump; the expired offer does not rejoin the queue; a stale candidate returns `None` with the version unchanged; closure ends each state correctly and issues no offer; a second closure run returns `None`; `expire_if_overdue` and `end_waiting_if_closed` each return an empty list on a row that is still valid.
 
-Tests in `tests/integration/test_expiration.py`: an overdue hold and an overdue offer each expire with the right reason; a row that is not yet due is untouched; expiry and the next offer land in one commit with one correlation ID; an expired offer does not rejoin the queue; a stale candidate is a no-op that leaves the version unchanged; closure ends each state correctly and issues no offer; a second closure run changes nothing.
+Every test ends with `capacity_violations(db) == []`.
 
-### Step 5: worker process
+## 5. Phase 3: worker process and race tests
 
-`app/workers/runner.py`: a `Scan` with a name, `find_candidates(db, limit)` and `process(candidate)`, and `run_scan_loop(scan, *, interval, batch_size, stop, publish)`. Each cycle reads candidates in a short read-only transaction, processes them one by one, passes each returned `SessionChange` to `publish`, and then waits for the rest of the interval or the stop signal. A failure on one candidate is logged and counted and the loop moves on. A lock or statement timeout (`is_retryable_timeout`) is left for the next cycle. A failure of the scan itself backs off exponentially up to 30 seconds.
+### 5.1 Metrics
 
-Scan modules, each holding only its candidate query and a call to the matching wrapper:
+Run `uv add prometheus-client`. In `app/core/metrics.py`, append only the worker metrics from Section 14: `worker_scan_duration_seconds` (histogram, label `scan`), `worker_candidates_total` (counter, labels `scan` and `outcome`), `worker_overdue_items` and `worker_oldest_overdue_seconds` (gauges), `worker_last_scan_timestamp_seconds` (gauge, label `scan`), `waitlist_promotion_latency_seconds` (histogram, label `cause`), and `capacity_violations` (gauge). If a teammate changed `uv.lock` at the same time, resolve it by running `uv lock` again.
 
-- `expiry.py`: distinct session IDs with a due `HELD` or `OFFERED` row, oldest deadline first. The same query's count and oldest age feed the backlog metrics.
-- `closure.py`: published sessions past `registration_closes_at` that still have `HELD`, `OFFERED` or `WAITLISTED` rows.
-- `promotion.py`: open, published sessions with a waiter and occupancy below capacity. This is the safety net for more than 20 freed seats and for any call site that was missed.
-- `invariant.py`: runs `capacity_violations`, sets the gauge and logs each offending session at error level.
+### 5.2 `app/workers/runner.py`
 
-`app/workers/__main__.py`: load settings, create the engine, start the metrics server, start the four loops, and on `SIGTERM` or `SIGINT` set the stop event, let the current transaction finish and exit within 20 seconds.
+A `Scan` has a `name`, `find_candidates(db, limit)` and `process(candidate) -> SessionChange | None`. `run_scan_loop(scan, *, session_factory, interval, batch_size, stop, publish)` does this each cycle: read candidates in a short read-only transaction; process them one at a time; pass each non-`None` result to `publish`; set the last-scan gauge; wait for the rest of the interval or for `stop`.
 
-`app/core/metrics.py`: add only the worker metrics from Section 14 (`worker_scan_duration_seconds`, `worker_candidates_total`, `worker_overdue_items`, `worker_oldest_overdue_seconds`, `waitlist_promotion_latency_seconds`, `capacity_violations`) and a last-scan timestamp gauge. This needs `uv add prometheus-client`; if a teammate adds a dependency at the same time, resolve `uv.lock` by running `uv lock` again.
+A failing candidate is logged, counted with `outcome="error"`, and skipped; a lock or statement timeout (`is_retryable_timeout`) counts as `outcome="busy"` and is retried next cycle. A failing candidate query is a dependency failure: back off exponentially to 30 seconds and leave the gauge unchanged. A `publish` failure is logged and never stops the loop.
 
-Also: `worker_metrics_port` in `app/core/config.py`, and a `worker` service in `compose.yaml` running `python -m app.workers` after `migrate`.
+### 5.3 Scan modules
 
-Tests: `tests/unit/test_runner.py` with a fake scan (continues after a candidate error, backs off after a scan error, stops promptly on the stop event), and `tests/integration/test_worker_scans.py` (each candidate query returns exactly the sessions it should; one cycle clears a prepared backlog; the invariant scan reports a violation inserted through the factories).
+Each holds a candidate query and a call to one transaction owner.
 
-### Step 6: concurrency and recovery tests
+- `expiry.py`: distinct session IDs with a due `HELD` or `OFFERED` row, oldest deadline first, limited to the batch. The same query sets `worker_overdue_items` and `worker_oldest_overdue_seconds`.
+- `closure.py`: `PUBLISHED` sessions with `closes_at <= now` that still have `HELD`, `OFFERED` or `WAITLISTED` rows.
+- `promotion.py`: open published sessions with a waiter and occupancy below capacity. This is the safety net for more than 20 freed seats and for any missed call site.
+- `invariant.py`: runs `capacity_violations`, sets the gauge, and logs each offending session at error level. It returns no change.
 
-File: `tests/concurrency/test_worker_races.py`. Every test ends with `capacity_violations(db) == []`.
+### 5.4 `app/workers/__main__.py` and Compose
 
-- Two `expire_session` calls on the same session at once: one transition, one offer.
-- Ten `promote_session` calls racing for three seats and eight waiters: offers go to queue numbers 1 to 3, with no duplicates.
-- A holder keeps the session lock across a deadline while two expiry calls wait: exactly one `EXPIRED` row afterwards.
-- Expiry racing closure on a session at its close instant: each row ends once, and no offer is created.
-- Recovery (FR-07.11): prepare overdue rows, then start a fresh runner; the backlog clears and original deadlines are unchanged.
+Load settings, create the engine and session factory, call `logging.basicConfig` (switch to `core/logging.py` when it exists), build the four scans, and run their loops as tasks with a no-op `publish`. On `SIGTERM` or `SIGINT`, set `stop`, let the current transactions finish, and exit within 20 seconds. Keep `main()` a flat list of tasks so Yifeng can add the health server as one more task.
 
-### Step 7: wrap up
+Add a `worker` service to `compose.yaml`: same image, `command: ["/app/.venv/bin/python", "-m", "app.workers"]`, depends on `migrate` completing. No port and no healthcheck yet; those come with Yifeng's server.
 
-Update `TECHNICAL_DESIGN.md`: Section 2 status, the new `domain/changes.py` in Section 5, and `WORKER_METRICS_PORT` in Section 13.5. Keep three pull requests: Step 1 and 2, then Step 3 and 4, then Step 5 and 6.
+### 5.5 Tests
 
-To run everything locally:
+`tests/unit/test_runner.py` with a fake scan: continues after a candidate error; backs off after a query error and leaves the gauge unchanged; sets the gauge after an empty pass; stops promptly on `stop`; calls `publish` once per non-`None` result.
+
+`tests/integration/test_worker_scans.py`: each candidate query returns exactly the right sessions; one cycle of each scan clears a prepared backlog; the invariant scan reports a violation inserted through the factories.
+
+`tests/concurrency/test_worker_races.py`, each ending with `capacity_violations(db) == []`:
+
+- Two `expire_session` calls on one session at once: one expiry, one offer.
+- Ten `promote_session` calls racing for three seats and eight waiters: offers go to queue numbers 1 to 3, no duplicates.
+- A holder keeps the session lock across a deadline while two expiry calls wait: exactly one `EXPIRED` row.
+- Expiry racing closure at the close instant: each row ends once, and no offer is created.
+- Recovery (FR-07.11): prepare overdue rows, start a fresh runner; the backlog clears and the stored deadlines are unchanged.
+
+Finish Phase 3 by updating TECHNICAL_DESIGN Section 2 (promotion, expiration and the worker loops are implemented).
+
+## 6. After my teammates' work lands
+
+**Decline and leave**, once Jiawei merges `core/errors.py`, `services/idempotency.py`, the auth dependency and his first command in `services/participations.py`. Copy his command shell exactly, then add:
+
+- Decline: lock with the caller's account shared, then `expire_if_overdue`. If the offer just expired, commit that and return `409 PARTICIPATION_EXPIRED`, as confirmation does. Otherwise require `OFFERED`, ownership and `now < starts_at`; transition to `CANCELLED` with `OFFER_DECLINED` and the attendee as actor; then `promote_waiters`. Cause `attendee_release`.
+- Leave: `end_waiting_if_closed` first. If it ended the entry, commit and return `409 REGISTRATION_CLOSED`. Otherwise require `WAITLISTED`, ownership and `now < starts_at`; transition to `CANCELLED` with `WITHDRAWN`. No promotion. Cause `attendee_release`.
+- A repeated command on an attempt already ended by the same action returns `200` with the current result, through the idempotency receipt or the state check.
+
+Review that Jiawei's confirm, cancel, admin cancel and capacity increase call my steps at the sites listed in TECHNICAL_DESIGN 7.3 and 7.4. When `domain/timing.py` lands, replace my two private helpers.
+
+**Publisher**, once Yifeng merges it: pass it to the loops instead of the no-op, and check one expiry, one closure and one promotion against the publication matrix.
+
+**Deployment**, with Yifeng: the worker Deployment uses his probes on `WORKER_METRICS_PORT`; the alerts cover `capacity_violations`, the oldest overdue item and scan freshness.
+
+**Joint validation with Jiawei**: the PRD round of 1,000 mixed requests on a capacity-20 session, confirmation racing expiry, withdraw and rejoin at the tail, and an old cancellation replayed after a new booking. For evaluation: promotion latency P95 at most five seconds over at least 100 observations per cause, the backlog cleared within 30 seconds of a restart, two worker replicas running together, and a demonstration with short validity periods set through the environment.
+
+## 7. Details that are easy to miss
+
+- Recheck registration with the fresh time after every queue-head account lock. An offer written at or after close would break `deadline_at > allocated_at`.
+- A seat freed after close stays empty. Closure never promotes, and promotion stops at close.
+- Workers write no `request_results` row and create one correlation ID per transaction. They are idempotent by state.
+- No `SKIP LOCKED` in the first version. Two workers on one session queue on the lock, and the second finds nothing to do. Add it across sessions only if metrics show contention.
+- Expiry inside a promotion-capable transaction keeps the cause `expiration`. Only the promotion scan uses `promotion`.
+- Cancellation latency for the report: the offer is written in the cancelling transaction, so compute it from `participation_changes` by correlation ID instead of a live metric.
+- `make_waiting` does not advance `last_queue_seq`. Tests that later join through Jiawei's service must set it first.
+- A trigger rejection in a test means a service missed a check. Fix the service, not the test.
+- Run the tests locally with:
 
 ```bash
 docker run -d --rm --name booking-test-db -p 55432:5432 -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=booking_test postgres:18
@@ -122,23 +168,3 @@ docker run -d --rm --name booking-test-db -p 55432:5432 -e POSTGRES_USER=test -e
 ```bash
 TEST_DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1:55432/booking_test uv run pytest
 ```
-
-## 6. After my teammates' parts land
-
-When Jiawei's authentication, error codes, envelopes and idempotency exist: implement whichever of join, leave and decline are assigned to me; review that his commands call my steps at the agreed sites; then validate jointly through the real services. That means the PRD round of 1,000 mixed requests on a capacity-20 session, confirmation racing expiry, withdraw and rejoin at the tail, and an old cancellation replayed after a new booking.
-
-When Yifeng's publisher exists: pass it to the runner in place of the no-op and check the messages against the publication matrix. Then the worker Deployment, its probes, the Prometheus scrape, and the alerts on `capacity_violations` and the oldest overdue item.
-
-For evaluation: promotion latency P95 of five seconds or less over at least 100 observations per cause, the backlog cleared within 30 seconds of a restart, two worker replicas running together, and the demonstration with shortened validity periods set through the environment.
-
-## 7. Details that are easy to miss
-
-- Recheck registration with the fresh time after every queue-head account lock. An offer written at or after close would break the `deadline_at > allocated_at` check.
-- A seat freed after registration close stays empty. Closure never promotes.
-- Workers are idempotent by state, not by receipts. They write no `request_results` row, use a null `actor_id`, and create one new correlation ID per transaction.
-- The first version uses no `SKIP LOCKED` at all. Two workers on one session queue on the lock and the second finds nothing to do. Add it across sessions only if metrics show contention.
-- Measure promotion latency after commit as the offer's `occurred_at` minus the expired row's `deadline_at`. The same figure can be recomputed for the report from `participation_changes` by joining on the correlation ID.
-- Nothing touches Redis inside a transaction. Publication runs after commit, and its failure is counted, never raised.
-- A trigger rejection in a test means the service missed a check. Fix the service, not the test.
-- Until `core/logging.py` exists, use `logging.getLogger(__name__)` and one `basicConfig` call in `__main__`, so the later switch is one line.
-- Three choices here are mine and worth a quick confirmation in Step 0: a null actor on every promotion, `ACCOUNT_DISABLED` as the reason for a skipped disabled waiter, and expiring all overdue rows of a session in one transaction.
