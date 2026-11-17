@@ -42,6 +42,7 @@ class Settings(BaseSettings):
 
     worker_scan_interval_seconds: float = Field(default=1, gt=0)
     worker_scan_batch_size: int = Field(default=100, gt=0)
+    worker_metrics_port: int = Field(default=9100, ge=1, le=65535)
 
 
 @lru_cache

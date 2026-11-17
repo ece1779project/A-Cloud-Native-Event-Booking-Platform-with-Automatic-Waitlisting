@@ -1,8 +1,10 @@
 # Technical Design Document: Cloud-Native Event Booking Platform
 
-Version: 1.1  
+Version: 1.2  
 Date: 2026-11-16  
 Status: Proposed target design; implementation pending
+
+Changes in 1.2: a command that advances a session version returns `SessionChange`, and the publisher accepts that value after commit (Sections 5.2 and 10.3). The worker process serves health and metrics on `WORKER_METRICS_PORT`, and a gauge records the last completed scan (Sections 13.3, 13.5, and 14).
 
 Changes in 1.1: aligned with the draft contract in [openapi.yaml](openapi.yaml). Management commands require `Idempotency-Key`; new codes `EMAIL_ALREADY_REGISTERED` and `SCHEDULE_FROZEN`; event publication also publishes sessions added later; `GET /me/events` lists manageable events; hidden drafts return 404 on management routes; event titles stay editable after publication; administrators cannot grant `ADMIN`; WebSocket ticket scopes are named (Section 10.5).
 
@@ -136,7 +138,7 @@ flowchart LR
 - Scan PostgreSQL for overdue holds and offers, closed registrations, and sessions needing promotion.
 - Reacquire the same locks as API writers and recheck every candidate.
 - Process bounded batches safely across multiple replicas.
-- Export backlog, latency, and capacity-invariant metrics.
+- Export backlog, latency, capacity-invariant metrics, and the time of the last completed scan.
 
 **WebSocket gateway**
 
@@ -215,7 +217,7 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   │   ├── events.py
 │   │   ├── sessions.py
 │   │   ├── participations.py
-│   │   └── realtime.py               # Every WebSocket message (Section 10.5)
+│   │   └── realtime.py               # WebSocket messages (Section 10.1) and SessionChange (Section 10.3)
 │   ├── services/                     # Transactional command and query services
 │   │   ├── accounts.py
 │   │   ├── auth.py
@@ -302,9 +304,10 @@ schemas, models, db                       contracts and persistence
 domain, core                              leaves; import nothing from app
 ```
 
-- Route handlers validate transport data, call one service, and publish its committed result. They open no transaction and take no lock.
+- Route handlers validate transport data, call one service, and, when that service returns a `SessionChange`, publish it after the call returns. They open no transaction and take no lock.
 - Services own authorization-sensitive business decisions and transactions. A service is called by route handlers and by workers, knows nothing about HTTP, and never imports `app.api`, `app.workers`, or `app.realtime`.
-- A service returns its committed result together with the invalidations to publish. The caller, a route handler or a worker loop, passes them to `realtime/publisher.py` after the service returns, so publication can never run inside a transaction.
+- The service that owns the transaction returns `None`, one `SessionChange`, or a list of them when the transaction advanced several session versions. `None` and an empty list mean that no session version changed. The fields are `event_id`, `session_id`, `version`, `cause`, and `transitions`, and the type is defined in Section 10.3. The caller, a route handler or a worker loop, passes the returned values to `realtime/publisher.py` after the service returns. `None` and an empty list are not published. The service does not build WebSocket messages, and publication never runs inside a transaction.
+- The transaction owners are `services/booking.py`, `services/participations.py`, `services/sessions.py`, `services/events.py`, and `services/expiration.py`. An event publish or an event cancel returns one `SessionChange` per session version it incremented. `services/promotion.py` only applies steps inside the caller's transaction, so it does not return a `SessionChange` and does not publish. A simulated payment failure, an event-field edit, an account disable, and a replay that writes nothing return `None`.
 - Models hold columns, constraints, and indexes only. Models never publish messages.
 - `db/participation_store.py` holds the participation queries and low-level writes that several services share: occupancy counts, the queue head, waitlist position, the queue number, the session version, and the history row. It makes no business decision, and its writes assume the caller already holds the session lock from `db/locks.py`.
 - PostgreSQL triggers reject an illegal state transition and any edit of history or frozen fields (`DATABASE_DESIGN.md` Section 2.6). They are a last line of defense: a service checks the rule first and returns the stable error code, so a trigger rejection that reaches a client is a bug.
@@ -842,13 +845,51 @@ Before private delivery, the gateway verifies that the account remains enabled a
 
 ### 10.3 Publication
 
-After a transaction commits, the API or worker publishes:
+`realtime/publisher.py` runs only after the transaction has committed. Services never call it. The caller is the route handler or the worker loop, and it passes every `SessionChange` that one commit returned.
 
-- A public session invalidation when availability, queue count, capacity, or status changes.
-- A private participation invalidation for each affected account.
-- A management invalidation for authorized organizer views.
+`SessionChange` is defined in `app/schemas/realtime.py` so a service can return it without importing `app.realtime`. It is an internal result, not a WebSocket message, and it has no contract fixture.
 
-Publication is best-effort and bounded by a short timeout. Failure increments a metric and is logged with the correlation ID. There is no database outbox in the baseline; 60-second reconciliation and reconnect reads close the notification gap.
+| Field | Meaning |
+| --- | --- |
+| `event_id` | Parent event. |
+| `session_id` | Session whose version this commit advanced. |
+| `version` | `event_sessions.version` after this commit. |
+| `cause` | Operation that started the transaction. One of the closed values below. It is not sent on the wire. |
+| `transitions` | Participation state changes written by this transaction. Empty when the session changed and no participation did. |
+
+Each transition has `participation_id`, `account_id`, and `reason`. That `reason` is a `participation.changed` value from Section 10.1. The publisher copies it onto the private message and does not derive it from `cause`. Offers created in the same transaction, and waiters ended as ineligible, are further transitions on the same `SessionChange`.
+
+`None`, or an empty list, means no session version changed. The caller does not call the publisher, and nothing is written to Redis.
+
+| `cause` | `session.changed` reason | `management.changed` reason |
+| --- | --- | --- |
+| `booking_hold` | `participation_changed` | `roster_changed` |
+| `waitlist_join` | `participation_changed` | `roster_changed` |
+| `confirmation` | `participation_changed` | `roster_changed` |
+| `attendee_release` | `participation_changed` | `roster_changed` |
+| `admin_participation_cancel` | `participation_changed` | `roster_changed` |
+| `expiration` | `participation_changed` | `roster_changed` |
+| `promotion` | `participation_changed` | `roster_changed` |
+| `registration_closed` | `registration_closed` | `roster_changed` |
+| `capacity_changed` | `capacity_changed` | `session_updated` |
+| `session_published` | `session_published` | `session_updated` |
+| `event_published` | `session_published` | `event_updated` |
+| `session_cancelled` | `session_cancelled` | `session_updated` |
+| `event_cancelled` | `event_cancelled` | `event_updated` |
+
+`attendee_release` covers cancel, decline, and leave. `promotion` is only the worker scan that promotes and does nothing else. Promotion inside another transaction keeps that transaction's `cause`. `event_published` and `event_cancelled` are the event-level transactions; each affected session is one `SessionChange`, and all of them share that `cause`.
+
+From one call the publisher emits the messages already required by Section 10.5:
+
+- One `session.changed` per `SessionChange`, carrying that element's `version` and the session reason of its `cause`.
+- One `participation.changed` per transition, on that account's channel.
+- One `management.changed` for the call. Its reason comes from `cause`, and its `sessions` list contains every element of the call. Every element of one call has the same `cause`.
+
+WebSocket messages keep the field name `reason`. `cause` is only the publisher's input.
+
+Two commits in Section 10.5 do not produce a `SessionChange`. After an event-field edit, the same publisher module sends `management.changed` with reason `event_updated` and an empty `sessions` list. After an account is disabled, it sends `auth.revoked`. Both run after commit.
+
+Publication is best-effort and bounded by a short timeout. Failure increments a metric and is logged with the correlation ID. A failure does not stop the remaining messages of the same call. There is no database outbox in the baseline; 60-second reconciliation and reconnect reads close the notification gap.
 
 ### 10.4 Frontend state
 
@@ -914,7 +955,7 @@ Every name starts with `seatflow:v1:`. A change that alters the meaning or forma
 
 **Publication matrix**
 
-The process that commits a transaction publishes its messages after the commit, whether that process is the API or a worker. The reason depends on the transition and not on the process.
+The process that commits a transaction publishes its messages after the commit, whether that process is the API or a worker. The input is the `SessionChange` list defined in Section 10.3. The reason depends on `cause` and on each transition, not on which process committed.
 
 - Every committed transaction that increments a session's version publishes exactly one `session.changed` carrying the new version, with the reason of the operation that started the transaction. This is a superset of the public rule in Section 10.3: a confirmation changes neither availability nor queue count but still publishes, so that versions seen by a subscriber are contiguous and a gap always means a lost message.
 - The same transaction publishes one `participation.changed` for each participation whose state it changed, on the owner's account channel.
@@ -949,7 +990,7 @@ Messages are published in the order public, private, then management. Each publi
 Phase 1 implements this section once, and no other module spells out a Redis name or message body by hand:
 
 - `app/core/redis_keys.py` holds one function per key and channel in the tables above.
-- `app/schemas/realtime.py` holds one Pydantic model per message type and one enum per `reason` list in Section 10.1.
+- `app/schemas/realtime.py` holds one Pydantic model per message type, one enum per `reason` list in Section 10.1, and the `SessionChange` result from Section 10.3. Contract fixtures cover the WebSocket messages only.
 - `tests/contract/fixtures/` holds one JSON example per message type. A contract test validates every fixture against its model and asserts the exact strings the name functions return.
 
 ## 11. Worker design and recovery
@@ -970,6 +1011,8 @@ At registration close, the worker changes outstanding `HELD` and `OFFERED` rows 
 Multiple workers may scan concurrently. Batches may distribute independent sessions with `SKIP LOCKED`, but promotion inside one session always reads the true lowest eligible `queue_seq`.
 
 On shutdown, workers stop taking candidates and finish or roll back active transactions within the Kubernetes termination grace period. On restart, all work is rediscovered from PostgreSQL; no in-process timer or Redis message is required.
+
+Each scan loop sets `worker_last_scan_timestamp_seconds` when a pass finishes without a dependency failure, including a pass that found no candidates (Section 14). A dependency failure leaves the previous value in place. The worker serves this metric, and its health endpoints, on `WORKER_METRICS_PORT` (Sections 13.3 and 13.5).
 
 ## 12. Failure behavior
 
@@ -1053,13 +1096,27 @@ Gateway policy sets a 30-second timeout for routine REST requests. The WebSocket
 
 ### 13.3 Health and lifecycle
 
+The API and the WebSocket gateway serve these paths on their HTTP port:
+
 - `/health/live`: process event loop is responsive; it does not query dependencies.
 - `/health/ready`: required startup and dependency checks pass for that component.
 - `/metrics`: Prometheus endpoint, internal only.
 
-Readiness fails when PostgreSQL is unavailable for API or workers. Redis loss marks degraded status in metrics but does not remove API Pods from service because core writes remain valid. The WebSocket gateway may fail readiness if it cannot consume Redis.
+The worker is `python -m app.workers`, not the FastAPI application. It serves the same three paths on `WORKER_METRICS_PORT` (Section 13.5). That port is cluster-internal. No Gateway route publishes it.
 
-Deployments use rolling updates, startup probes, bounded termination grace periods, and resource requests and limits. API and WebSocket Deployments start with 1–3 replicas and a 60% CPU HPA target, then are adjusted from measured behavior.
+Worker Pod probes use that port:
+
+| Probe | Path | Succeeds when | Does not check |
+| --- | --- | --- | --- |
+| Liveness | `/health/live` | The process answers. | PostgreSQL, Redis, and scan age. A stalled scan must not restart the Pod. |
+| Readiness | `/health/ready` | PostgreSQL accepts a trivial query. | Redis. Section 12 keeps scanning and promotion running without Redis; publication failure stays a metric. |
+| Startup | `/health/ready` | The same readiness check, so a slow first database connection is not a restart. | Redis and scan age. |
+
+Prometheus scrapes each worker Pod at `WORKER_METRICS_PORT` and path `/metrics`. A worker that has stopped scanning stays Ready as long as the process and PostgreSQL are up. The gauge and alert in Section 14 report that condition. Liveness and readiness do not.
+
+Readiness fails when PostgreSQL is unavailable for the API or for workers. Redis loss marks degraded status in metrics but does not remove API or worker Pods from service, because core writes and scans remain valid. The WebSocket gateway may fail readiness if it cannot consume Redis.
+
+Worker Deployments use the probe table above. API and WebSocket Deployments probe the same paths on their own HTTP port: liveness hits `/health/live`, and readiness and startup hit `/health/ready`. All Deployments use rolling updates, bounded termination grace periods, and resource requests and limits. API and WebSocket Deployments start with 1–3 replicas and a 60% CPU HPA target, then are adjusted from measured behavior.
 
 ### 13.4 Connection budget
 
@@ -1099,6 +1156,7 @@ All processes read configuration from environment variables through `app/core/co
 | `REFRESH_TOKEN_TTL_SECONDS` | `604800` | API | Absolute refresh-token lifetime (Section 9.1). |
 | `WORKER_SCAN_INTERVAL_SECONDS` | `1` | Workers | Delay between scans (Section 11). |
 | `WORKER_SCAN_BATCH_SIZE` | `100` | Workers | Candidates taken per scan. The default is a starting value to be adjusted from load tests. |
+| `WORKER_METRICS_PORT` | `9100` | Workers | Port of the worker HTTP server for `/health/live`, `/health/ready`, and `/metrics` (Section 13.3). Not the API port. |
 | `BOOTSTRAP_ADMIN_EMAIL`, `BOOTSTRAP_ADMIN_PASSWORD` | None; password is secret | Bootstrap command | First administrator account. The application processes do not read them. |
 
 The gateway needs no signing key: it authenticates connections through Redis tickets, which carry the account ID and access-token expiry. It reads PostgreSQL only for the account-state and ownership checks in Section 10.2.
@@ -1123,6 +1181,7 @@ Minimum application metrics:
 - `worker_candidates_total`
 - `worker_overdue_items`
 - `worker_oldest_overdue_seconds`
+- `worker_last_scan_timestamp_seconds`
 - `waitlist_promotion_latency_seconds`
 - `capacity_violations`
 - `db_pool_connections`
@@ -1134,10 +1193,12 @@ Minimum application metrics:
 
 Labels use bounded values such as service, operation, outcome, and error code. Account, participation, event, session, request, and correlation IDs belong in logs, not metric labels.
 
+`worker_last_scan_timestamp_seconds` is a gauge, one series per scan loop. Its label `scan` is `expiry`, `closure`, `promotion`, or `invariant`. The value is the Unix time of the last pass that finished without a dependency failure. `worker_oldest_overdue_seconds` measures due rows that are still waiting. It does not say whether the loop is still running.
+
 Grafana dashboards cover:
 
 - API traffic, latency, unexpected errors, and business outcomes.
-- Occupancy correctness, expiry backlog, and promotion latency.
+- Occupancy correctness, expiry backlog, promotion latency, and worker scan freshness.
 - PostgreSQL connections, transaction latency, locks, and storage.
 - Redis availability, memory, and operation errors.
 - WebSocket connections, publication failures, and reconnects.
@@ -1147,6 +1208,7 @@ Required alerts:
 
 - Any `capacity_violations > 0`: immediate critical alert.
 - Oldest overdue item above 30 seconds for 1 minute.
+- A Ready worker whose `worker_last_scan_timestamp_seconds` series is missing, or older than 30 seconds, for 1 minute. The Pod is up and PostgreSQL is reachable, but that scan loop has stopped. A PostgreSQL outage is the readiness failure, not this alert.
 - Unexpected `5xx` ratio above 5% for 5 minutes.
 
 Alert delivery is tested with safe synthetic metrics or fault injection, never by deliberately overbooking.
