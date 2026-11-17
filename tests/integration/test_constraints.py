@@ -14,7 +14,6 @@ from app.models.auth_session import AuthSession
 from app.models.event_session import EventSession
 from app.models.management_action import ManagementAction
 from app.models.participation import Participation
-from app.models.participation_change import ParticipationChange
 from tests.factories import make_account, make_held, make_scope, make_waiting
 
 
@@ -151,18 +150,7 @@ async def test_management_action_needs_exactly_one_target(session_factory):
 async def test_history_tables_are_append_only(session_factory):
     async with session_factory.begin() as db:
         organizer, event, session = await make_scope(db)
-        held = await make_held(db, session, organizer)
-        db.add(
-            ParticipationChange(
-                participation_id=held.id,
-                change_no=1,
-                to_state="HELD",
-                occurred_at=datetime.now(UTC),
-                reason_code="BOOKED",
-                actor_id=organizer.id,
-                correlation_id=uuid.uuid4(),
-            )
-        )
+        await make_held(db, session, organizer)  # also writes its history row
         db.add(
             ManagementAction(
                 actor_id=organizer.id,

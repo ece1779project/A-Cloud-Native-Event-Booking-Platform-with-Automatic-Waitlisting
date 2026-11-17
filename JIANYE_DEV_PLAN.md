@@ -20,7 +20,9 @@ Still skeletons: every service, every worker, every route, all schemas, `domain/
 6. Shared files (`participation_store.py`, `factories.py`, `compose.yaml`, `pyproject.toml`, `core/metrics.py`, `schemas/realtime.py`) change additively only, appended at the end of the file to keep merges clean.
 7. Phases 1 and 2 define the types and signatures Jiawei builds on, so they come first.
 
-## 3. Phase 1: shared types and helpers
+## 3. Phase 1: shared types and helpers (done)
+
+Status, 2026-11-17: implemented and passing (41 tests, `ruff check` clean). Two changes from the original plan, both reflected below: the factories now write the history rows a real service would write, and the unit test file is `tests/unit/test_session_change.py`.
 
 ### 3.1 `SessionChange` in `app/schemas/realtime.py`
 
@@ -44,13 +46,13 @@ Both reads use `populate_existing` like the existing queries.
 
 ### 3.3 Additions to `tests/factories.py`
 
-`make_account(disabled=False)`; `make_session(status=..., window="open" | "closed" | "not_open")`; `make_held(overdue=False)`; `make_offered(queue_seq, overdue=False)`; `make_confirmed`. An overdue row is allocated ten minutes ago with a deadline one minute ago, which satisfies `deadline_at > allocated_at`. A closed window keeps `opens_at < closes_at <= starts_at`.
+`make_account(disabled=False)`; `make_session(status=..., window="open" | "closed" | "not_open")`; `make_scope(window=...)`; `make_held(overdue=False)`; `make_offered(queue_seq, overdue=False)`; `make_confirmed`. An overdue row is allocated ten minutes ago with a deadline one minute ago, which satisfies `deadline_at > allocated_at`. A closed window keeps `opens_at < closes_at <= starts_at`.
+
+Every participation builder also writes its history: `BOOKED` for a hold, `ENQUEUED` for a waiter, `ENQUEUED` then `PROMOTED` for an offer, `BOOKED` then `PAYMENT_CONFIRMED` for a confirmed row. Without it, the first `transition` on a factory row would be history change 1 with a non-null source state, which the `first_has_no_source` check rejects. Two existing tests that inserted change 1 by hand now rely on the factory instead (`test_history_tables_are_append_only`, `test_store_helpers`).
 
 ### 3.4 Tests
 
-Extend `tests/integration/test_locks_and_store.py`: each legal transition writes the right fields and history row; an illegal one raises `ValueError` before any SQL; `due_attempts` includes a row exactly at its deadline and excludes one a second later. Add `tests/unit/test_realtime_change.py`: `REASON_BY_STATE` covers all six states, and the models are frozen.
-
-Include today's three doc edits in this phase.
+Extended `tests/integration/test_locks_and_store.py`: each target state gets the right fields and history row, and the trigger accepts the commit; an illegal transition or a misplaced `deadline_at` raises `ValueError` and writes nothing; `due_attempts` includes a row exactly at its deadline and excludes it a second earlier; `attempts_in_states` puts unqueued rows first. Added `tests/unit/test_session_change.py`: the enum values match the design, `REASON_BY_STATE` covers all six states one to one, and the models are frozen.
 
 ## 4. Phase 2: promotion and expiration
 
