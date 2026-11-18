@@ -14,7 +14,8 @@ Order:
 3. the accounts the command depends on, in ascending ID order: FOR SHARE for a
    permission or eligibility check, FOR UPDATE for a role or disablement change.
 
-Account-only changes use ``lock_account_scope``. Promotion locks each queue
+Account-only changes use ``lock_account_scope``; refresh and logout use
+``lock_refresh_session`` (account FOR SHARE, then the token row). Promotion locks each queue
 head's account afterwards with ``lock_queue_head_account`` (shared only, which
 cannot deadlock). Every lock re-reads the row (``populate_existing``) so
 callers never act on stale identity-map state.
@@ -32,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.engine import db_now
 from app.models.account import Account
+from app.models.auth_session import AuthSession
 from app.models.event import Event
 from app.models.event_session import EventSession
 
@@ -158,6 +160,46 @@ async def lock_account_scope(
     """Account-only changes (role, disablement): no event or session locks."""
     accounts = await _lock_accounts(db, share_ids=share_ids, exclusive_ids=exclusive_ids)
     return LockedAccounts(accounts=accounts, now=await db_now(db))
+
+
+@dataclass(frozen=True, slots=True)
+class LockedRefreshSession:
+    account: Account
+    session: AuthSession
+    now: datetime  # clock_timestamp() read after the token-row lock
+
+
+async def lock_refresh_session(
+    db: AsyncSession, refresh_token_hash: bytes
+) -> LockedRefreshSession | None:
+    """Refresh and logout scope: account FOR SHARE, then the token row FOR UPDATE.
+
+    The same order as login (account share lock) and disablement (account
+    exclusive lock), so a refresh can never succeed after a disablement
+    commits. Two concurrent refreshes of one token serialize on the row lock;
+    the second sees ``rotated_at`` set. Returns ``None`` for an unknown token.
+
+    The unlocked account_id lookup is safe because a row's account never changes.
+    """
+    account_id = await db.scalar(
+        select(AuthSession.account_id).where(
+            AuthSession.refresh_token_hash == refresh_token_hash
+        )
+    )
+    if account_id is None:
+        return None
+    accounts = await _lock_accounts(db, share_ids=[account_id], exclusive_ids=())
+    session = await db.scalar(
+        select(AuthSession)
+        .where(AuthSession.refresh_token_hash == refresh_token_hash)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if session is None:
+        return None
+    return LockedRefreshSession(
+        account=accounts[account_id], session=session, now=await db_now(db)
+    )
 
 
 async def lock_queue_head_account(

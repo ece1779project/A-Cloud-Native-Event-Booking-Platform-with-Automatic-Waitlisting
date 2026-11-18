@@ -9,10 +9,11 @@ authentication work; values the design fixes live in ``app.core.constants``.
 Design: TECHNICAL_DESIGN.md Section 13.5.
 """
 
-from functools import lru_cache
+from functools import cached_property, lru_cache
+from ipaddress import IPv4Network, IPv6Network, ip_network
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -43,6 +44,33 @@ class Settings(BaseSettings):
     worker_scan_interval_seconds: float = Field(default=1, gt=0)
     worker_scan_batch_size: int = Field(default=100, gt=0)
     worker_metrics_port: int = Field(default=9100, ge=1, le=65535)
+
+    # Optional here so Alembic and tests can build Settings; the API checks them at startup.
+    jwt_private_key: SecretStr | None = None   # Ed25519 PEM (PKCS8)
+    jwt_public_key: str | None = None          # Ed25519 PEM (SubjectPublicKeyInfo)
+
+    bootstrap_admin_email: str | None = None
+    bootstrap_admin_password: SecretStr | None = None
+
+    @field_validator("trusted_proxy_cidrs")
+    @classmethod
+    def _valid_cidrs(cls, v: str) -> str:
+        _parse_cidrs(v)
+        return v
+
+    @cached_property
+    def trusted_proxies(self) -> tuple[IPv4Network | IPv6Network, ...]:
+        """``TRUSTED_PROXY_CIDRS`` parsed: comma-separated CIDRs of the gateway."""
+        return _parse_cidrs(self.trusted_proxy_cidrs)
+
+    def require_jwt_keys(self) -> tuple[str, str]:
+        if self.jwt_private_key is None or self.jwt_public_key is None:
+            raise RuntimeError("JWT_PRIVATE_KEY and JWT_PUBLIC_KEY must be set for the API")
+        return self.jwt_private_key.get_secret_value(), self.jwt_public_key
+
+
+def _parse_cidrs(value: str) -> tuple[IPv4Network | IPv6Network, ...]:
+    return tuple(ip_network(part.strip(), strict=False) for part in value.split(",") if part.strip())
 
 
 @lru_cache

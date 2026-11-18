@@ -195,12 +195,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/TokenEnvelope' }
         '401':
-          description: '`AUTHENTICATION_REQUIRED` or `TOKEN_EXPIRED` (missing, invalid, expired, revoked, or reused token; bad CSRF).'
+          description: '`AUTHENTICATION_REQUIRED` (missing, invalid, expired, revoked, or reused refresh token).'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
         '403':
-          description: '`ACCOUNT_DISABLED`.'
+          description: '`FORBIDDEN` (missing or mismatched `X-CSRF-Token`) or `ACCOUNT_DISABLED`.'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
@@ -226,8 +226,8 @@ paths:
           headers:
             X-Request-ID: { $ref: '#/components/headers/XRequestId' }
             Set-Cookie: { $ref: '#/components/headers/SetAuthCookies' }
-        '401':
-          description: '`AUTHENTICATION_REQUIRED` (bad CSRF).'
+        '403':
+          description: '`FORBIDDEN` (missing or mismatched `X-CSRF-Token`).'
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorEnvelope' }
