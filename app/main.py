@@ -12,8 +12,11 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from app.api import health
+from app.api.exception_handlers import register_exception_handlers
+from app.api.middleware import RequestIdMiddleware
 from app.api.v1.router import router as v1_router
 from app.core.config import get_settings
+from app.core.rate_limit import RateLimiter
 from app.core.redis_client import create_redis
 from app.db.engine import create_engine, create_session_factory
 
@@ -21,6 +24,8 @@ from app.db.engine import create_engine, create_session_factory
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    settings.require_jwt_keys()
+    app.state.settings = settings
     app.state.engine = create_engine(settings)
     app.state.session_factory = create_session_factory(app.state.engine)
     app.state.redis = create_redis(settings.redis_url)
@@ -33,6 +38,9 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Event Booking API", lifespan=lifespan)
+    app.state.rate_limiter = RateLimiter()
+    app.add_middleware(RequestIdMiddleware)
+    register_exception_handlers(app)
     app.include_router(health.router)
     app.include_router(v1_router)
     return app

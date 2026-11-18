@@ -16,7 +16,10 @@ services:
     build: .
     ports:
       - "${API_PORT:-8000}:8000"
-    environment: *app-env
+    environment:
+      <<: *app-env
+      JWT_PRIVATE_KEY: ${JWT_PRIVATE_KEY:?set JWT_PRIVATE_KEY in .env}
+      JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:?set JWT_PUBLIC_KEY in .env}
     depends_on:
       migrate:
         condition: service_completed_successfully

@@ -1,7 +1,7 @@
 """Enumerations stored in the database and exposed by the API: account role,
 event and session status, participation state, history reason codes,
-terminal reason codes, refresh-token revoke reasons and command result
-codes.
+terminal reason codes, refresh-token revoke reasons, command result codes
+and management action types.
 
 Design: DATABASE_DESIGN.md Sections 2 and 3; TECHNICAL_DESIGN.md Section 8.5.
 """
@@ -61,3 +61,15 @@ class RevokeReason(StrEnum):
     LOGOUT = "LOGOUT"
     REUSE_DETECTED = "REUSE_DETECTED"
     ACCOUNT_DISABLED = "ACCOUNT_DISABLED"
+
+
+class ManagementActionType(StrEnum):
+    """``management_actions.action`` values."""
+
+    ROLE_CHANGED = "ROLE_CHANGED"
+    ACCOUNT_DISABLED = "ACCOUNT_DISABLED"
+    ACCOUNT_ENABLED = "ACCOUNT_ENABLED"
+    SESSION_CANCELLED = "SESSION_CANCELLED"
+    EVENT_CANCELLED = "EVENT_CANCELLED"
+    PARTICIPATION_CANCELLED = "PARTICIPATION_CANCELLED"
+    CAPACITY_CHANGED = "CAPACITY_CHANGED"

@@ -76,3 +76,27 @@ async def engine(database_url):
 @pytest.fixture
 def session_factory(engine):
     return create_session_factory(engine)
+
+
+# ---- Chapter 02: Ed25519 key pair generated per run, so tests need no .env ----
+@pytest.fixture(scope="session")
+def jwt_keys() -> tuple[str, str]:
+    # Imported here so the rest of the suite runs before chapter 02 adds the dependency.
+    from cryptography.hazmat.primitives import serialization as s
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    k = Ed25519PrivateKey.generate()
+    private = k.private_bytes(s.Encoding.PEM, s.PrivateFormat.PKCS8, s.NoEncryption()).decode()
+    public = k.public_key().public_bytes(s.Encoding.PEM, s.PublicFormat.SubjectPublicKeyInfo).decode()
+    return private, public
+
+
+# ---- Chapters 03 and 09: settings shared by integration and concurrency tests ----
+@pytest.fixture
+def settings(database_url, jwt_keys) -> Settings:
+    return Settings(
+        database_url=database_url,
+        redis_url="redis://unused",
+        jwt_private_key=jwt_keys[0],
+        jwt_public_key=jwt_keys[1],
+    )

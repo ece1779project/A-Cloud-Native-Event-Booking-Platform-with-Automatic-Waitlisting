@@ -27,6 +27,8 @@ class ErrorCode(StrEnum):
     PARTICIPATION_EXPIRED = "PARTICIPATION_EXPIRED"
     SESSION_STARTED = "SESSION_STARTED"
     CAPACITY_BELOW_OCCUPIED = "CAPACITY_BELOW_OCCUPIED"
+    SCHEDULE_FROZEN = "SCHEDULE_FROZEN"
+    EMAIL_ALREADY_REGISTERED = "EMAIL_ALREADY_REGISTERED"
     WAITLIST_REQUIRED = "WAITLIST_REQUIRED"
     DIRECT_BOOKING_AVAILABLE = "DIRECT_BOOKING_AVAILABLE"
     REFRESH_ALREADY_ROTATED = "REFRESH_ALREADY_ROTATED"
@@ -34,11 +36,9 @@ class ErrorCode(StrEnum):
     LOCK_TIMEOUT = "LOCK_TIMEOUT"
     DATABASE_UNAVAILABLE = "DATABASE_UNAVAILABLE"
     SERVICE_UNAVAILABLE = "SERVICE_UNAVAILABLE"
-    # 设计文档没定义"意外 500"的码。先用这个，并在组里确认（见 README 接口约定表）。
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
-# code -> (http_status, retryable, 默认 message)
 _SPEC: dict[ErrorCode, tuple[int, bool, str]] = {
     ErrorCode.VALIDATION_ERROR: (422, False, "The request is invalid."),
     ErrorCode.AUTHENTICATION_REQUIRED: (401, False, "Authentication is required."),
@@ -56,6 +56,8 @@ _SPEC: dict[ErrorCode, tuple[int, bool, str]] = {
     ErrorCode.PARTICIPATION_EXPIRED: (409, False, "The hold or offer has expired."),
     ErrorCode.SESSION_STARTED: (409, False, "The session has already started."),
     ErrorCode.CAPACITY_BELOW_OCCUPIED: (409, False, "Capacity cannot go below occupied seats."),
+    ErrorCode.SCHEDULE_FROZEN: (409, False, "Session times cannot change once registrations exist."),
+    ErrorCode.EMAIL_ALREADY_REGISTERED: (409, False, "This email is already registered."),
     ErrorCode.WAITLIST_REQUIRED: (409, False, "No seat can be booked directly while the session is full or queued."),
     ErrorCode.DIRECT_BOOKING_AVAILABLE: (409, False, "A seat is available; book it directly."),
     ErrorCode.REFRESH_ALREADY_ROTATED: (409, False, "This refresh token was just rotated."),
@@ -72,7 +74,6 @@ def status_of(code: ErrorCode) -> int:
 
 
 class AppError(Exception):
-    """抛出即回滚当前事务。业务"拒绝但要提交"的情况不要用它（见 07 章 CommandOutcome）。"""
 
     def __init__(
         self,
