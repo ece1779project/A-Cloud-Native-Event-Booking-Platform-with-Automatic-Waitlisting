@@ -5,14 +5,15 @@ holds that session's lock from ``app.db.locks``.
 """
 
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 
 from sqlalchemy import Row, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.enums import ParticipationState
-from app.domain.transitions import ACTIVE_STATES
+from app.domain.enums import EndReason, ParticipationState, TransitionReason
+from app.domain.transitions import ACTIVE_STATES, TERMINAL_STATES, can_transition
 from app.models.event_session import EventSession
 from app.models.participation import Participation
 from app.models.participation_change import ParticipationChange
@@ -156,3 +157,90 @@ async def capacity_violations(db: AsyncSession) -> list[Row]:
     """The design's Section 7 check. Must always return no rows; workers export
     its length as a metric and tests run it after every round."""
     return list((await db.execute(_CAPACITY_VIOLATIONS)).all())
+
+
+async def due_attempts(
+    db: AsyncSession, session_id: uuid.UUID, now: datetime
+) -> list[Participation]:
+    """HELD and OFFERED rows whose deadline has been reached (``now >= deadline_at``),
+    earliest deadline first."""
+    return list(
+        await db.scalars(
+            select(Participation)
+            .where(
+                Participation.session_id == session_id,
+                Participation.state.in_(
+                    (ParticipationState.HELD, ParticipationState.OFFERED)
+                ),
+                Participation.deadline_at <= now,
+            )
+            .order_by(Participation.deadline_at, Participation.id)
+            .execution_options(populate_existing=True)
+        )
+    )
+
+
+async def attempts_in_states(
+    db: AsyncSession, session_id: uuid.UUID, states: Iterable[ParticipationState]
+) -> list[Participation]:
+    """The session's rows in the given states: unqueued rows first, then by queue
+    number, then by ID, so callers process them in a stable order."""
+    return list(
+        await db.scalars(
+            select(Participation)
+            .where(
+                Participation.session_id == session_id,
+                Participation.state.in_(tuple(states)),
+            )
+            .order_by(Participation.queue_seq.nulls_first(), Participation.id)
+            .execution_options(populate_existing=True)
+        )
+    )
+
+
+async def apply_transition(
+    db: AsyncSession,
+    participation: Participation,
+    to_state: ParticipationState,
+    *,
+    reason_code: TransitionReason | EndReason,
+    now: datetime,
+    correlation_id: uuid.UUID,
+    actor_id: uuid.UUID | None,
+    deadline_at: datetime | None = None,
+) -> None:
+    """Move an existing attempt to ``to_state`` and append its history row.
+
+    Sets the timestamps the target state needs and nothing else; the business
+    decision belongs to the caller. ``deadline_at`` is required for, and only
+    accepted with, ``OFFERED``. Caller must hold the session lock.
+
+    Raises ``ValueError`` for a transition the state machine forbids, so a
+    service bug never reaches the database trigger.
+    """
+    from_state = ParticipationState(participation.state)
+    if not can_transition(from_state, to_state):
+        raise ValueError(f"illegal transition {from_state} -> {to_state}")
+    if (to_state == ParticipationState.OFFERED) != (deadline_at is not None):
+        raise ValueError("deadline_at is required for OFFERED and only for OFFERED")
+
+    participation.state = to_state
+    if to_state == ParticipationState.OFFERED:
+        participation.allocated_at = now
+        participation.deadline_at = deadline_at
+    elif to_state == ParticipationState.CONFIRMED:
+        participation.confirmed_at = now
+    elif to_state in TERMINAL_STATES:
+        participation.ended_at = now
+        participation.end_reason = reason_code
+
+    await record_change(
+        db,
+        participation_id=participation.id,
+        from_state=from_state,
+        to_state=to_state,
+        reason_code=reason_code,
+        occurred_at=now,
+        correlation_id=correlation_id,
+        actor_id=actor_id,
+    )

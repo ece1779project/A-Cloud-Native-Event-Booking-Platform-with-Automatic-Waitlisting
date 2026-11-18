@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import Settings
 from app.db.engine import create_engine, create_session_factory
+from app.db.participation_store import capacity_violations
 
 ROOT = Path(__file__).resolve().parents[1]
 TABLES = (
@@ -100,3 +101,12 @@ def settings(database_url, jwt_keys) -> Settings:
         jwt_private_key=jwt_keys[0],
         jwt_public_key=jwt_keys[1],
     )
+
+
+@pytest_asyncio.fixture
+async def capacity_invariant(session_factory):
+    """Opt in with ``pytestmark = pytest.mark.usefixtures("capacity_invariant")``:
+    after the test, the capacity-invariant query must return no rows."""
+    yield
+    async with session_factory.begin() as db:
+        assert await capacity_violations(db) == []
