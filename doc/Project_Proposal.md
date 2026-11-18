@@ -87,9 +87,12 @@ Module ownership for the booking path, agreed during implementation:
 | `domain/timing.py` (shared by booking and promotion) | Jiawei |
 | `services/idempotency.py` | Jiawei |
 | Direct booking and waitlist join (`services/booking.py`) | Jiawei |
-| Leave and decline | Jianye |
-| `services/promotion.py` and `services/expiration.py` | Jianye |
-| Worker health, `WORKER_METRICS_PORT` and scan gauge | Yifeng |
+| Leave and decline (commands in `services/participations.py`) | Jianye |
+| `services/promotion.py`, `services/expiration.py` and the scan loops in `workers/` | Jianye |
+| `SessionChange` and its two enums in `schemas/realtime.py` | Jianye |
+| WebSocket message models in `schemas/realtime.py` | Yifeng |
+| Worker metric definitions in `core/metrics.py`, set by the scan loops, including `worker_last_scan_timestamp_seconds` | Jianye |
+| Worker health and metrics server on `WORKER_METRICS_PORT`, probes, scrape and the scan-freshness alert | Yifeng |
 
 All members will review interfaces, test integration, verify deployment, and prepare the presentation. Jiawei and Jianye will jointly validate reservation correctness; Yifeng will support cloud testing.
 
