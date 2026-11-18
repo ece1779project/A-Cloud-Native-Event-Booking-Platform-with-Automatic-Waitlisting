@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from prometheus_client import REGISTRY
 
 from app.schemas.realtime import ChangeCause, SessionChange
-from app.workers.runner import run_scan_loop, run_scan_once
+from app.workers.runner import publish_nothing, run_scan_loop, run_scan_once
 
 
 def _change() -> SessionChange:
@@ -75,7 +75,7 @@ async def test_a_publish_failure_does_not_stop_the_pass():
 async def test_an_empty_pass_sets_the_last_scan_gauge():
     scan = FakeScan()
     before = time.time()
-    await run_scan_once(scan, batch_size=10, publish=_ignore)
+    await run_scan_once(scan, batch_size=10, publish=publish_nothing)
     assert _sample("worker_last_scan_timestamp_seconds", scan=scan.name) >= before
 
 
@@ -116,9 +116,5 @@ async def test_stop_ends_the_pass_before_the_next_candidate():
         stop.set()
 
     scan = FakeScan(candidates=[first, lambda: seen.append(2)])
-    await run_scan_once(scan, batch_size=10, publish=_ignore, stop=stop)
+    await run_scan_once(scan, batch_size=10, publish=publish_nothing, stop=stop)
     assert seen == [1]
-
-
-async def _ignore(change):
-    pass

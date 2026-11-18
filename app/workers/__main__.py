@@ -5,9 +5,8 @@ Starts every scan loop, serves health and metrics on ``WORKER_METRICS_PORT``
 graceful shutdown.
 
 On SIGTERM or SIGINT the loops stop taking candidates, the transactions in
-flight finish, and the process exits within ``SHUTDOWN_GRACE_SECONDS``. If a
-loop dies unexpectedly, the others are stopped and the process exits with an
-error so that its supervisor restarts it.
+flight finish, and the process exits within ``SHUTDOWN_GRACE_SECONDS``. The
+loops catch their own errors and back off, so they end only on that signal.
 
 Design: TECHNICAL_DESIGN.md Sections 11 and 13.3.
 """
@@ -74,18 +73,14 @@ async def main() -> None:
     # settings.worker_metrics_port here as one more task.
     log.info("worker started: %s", ", ".join(t.get_name() for t in tasks))
 
-    stopping = asyncio.create_task(stop.wait())
     try:
-        await asyncio.wait([stopping, *tasks], return_when=asyncio.FIRST_COMPLETED)
-        stop.set()
-        done, pending = await asyncio.wait(tasks, timeout=SHUTDOWN_GRACE_SECONDS)
-        for task in pending:
-            task.cancel()
-        await asyncio.gather(*pending, return_exceptions=True)
-        for task in done:
-            task.result()  # re-raise a loop that died with an error
+        await stop.wait()
+        # Each loop finishes its current transaction and returns; any loop
+        # still running after the grace period is cancelled.
+        await asyncio.wait_for(asyncio.gather(*tasks), SHUTDOWN_GRACE_SECONDS)
+    except TimeoutError:
+        log.warning("scan loops cancelled after %ss", SHUTDOWN_GRACE_SECONDS)
     finally:
-        stopping.cancel()
         await engine.dispose()
     log.info("worker stopped")
 

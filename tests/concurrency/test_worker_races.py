@@ -12,7 +12,7 @@ from app.db.locks import lock_session_scope
 from app.domain.enums import EndReason, ParticipationState
 from app.models.participation import Participation
 from app.models.participation_change import ParticipationChange
-from app.services.expiration import close_session, expire_session, promote_session
+from app.services.expiration import close_session
 from app.workers.expiry import ExpiryScan
 from app.workers.runner import run_scan_loop
 from tests.factories import (
@@ -24,15 +24,11 @@ from tests.factories import (
     make_session,
     make_waiting,
 )
+from tests.helpers import OFFER_VALIDITY, expire, promote
 
 pytestmark = pytest.mark.usefixtures("capacity_invariant")
 
 S = ParticipationState
-VALIDITY = 600
-
-
-def _expire(session_factory, session_id):
-    return expire_session(session_factory, session_id, offer_validity_seconds=VALIDITY)
 
 
 async def _rows(session_factory, session_id):
@@ -62,7 +58,7 @@ async def test_two_expiry_workers_on_one_session(session_factory):
         await make_waiting(db, session, await make_account(db), 1)
 
     results = await asyncio.gather(
-        _expire(session_factory, session.id), _expire(session_factory, session.id)
+        expire(session_factory, session.id), expire(session_factory, session.id)
     )
 
     assert sorted(r is None for r in results) == [False, True]
@@ -80,12 +76,7 @@ async def test_ten_promoters_race_for_three_seats(session_factory):
             await make_waiting(db, session, await make_account(db), seq)
 
     results = await asyncio.gather(
-        *(
-            promote_session(
-                session_factory, session.id, offer_validity_seconds=VALIDITY
-            )
-            for _ in range(10)
-        )
+        *(promote(session_factory, session.id) for _ in range(10))
     )
 
     assert sum(r is not None for r in results) == 1
@@ -115,7 +106,7 @@ async def test_expiry_waits_for_a_lock_held_across_the_deadline(session_factory)
 
     async def worker():
         await locked.wait()
-        return await _expire(session_factory, session.id)
+        return await expire(session_factory, session.id)
 
     _, first, second = await asyncio.gather(holder(), worker(), worker())
 
@@ -138,7 +129,7 @@ async def test_expiry_racing_closure_at_the_close_instant(session_factory):
 
     await asyncio.sleep((closes_at - datetime.now(UTC)).total_seconds() + 0.1)
     await asyncio.gather(
-        _expire(session_factory, session.id), close_session(session_factory, session.id)
+        expire(session_factory, session.id), close_session(session_factory, session.id)
     )
 
     held, waiter = await _rows(session_factory, session.id)
@@ -169,7 +160,7 @@ async def test_a_fresh_runner_clears_an_overdue_backlog(session_factory):
         if p.deadline_at is not None
     }
 
-    scan = ExpiryScan(session_factory, VALIDITY)
+    scan = ExpiryScan(session_factory, OFFER_VALIDITY)
     stop = asyncio.Event()
     loop = asyncio.create_task(
         run_scan_loop(scan, interval=0.05, batch_size=2, stop=stop)

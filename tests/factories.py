@@ -215,9 +215,17 @@ async def make_confirmed(
     )
 
 
-async def make_scope(db: AsyncSession, *, capacity: int = 2, window: Window = "open"):
-    """An organizer, a published event and one published session."""
+async def make_scope(
+    db: AsyncSession,
+    *,
+    capacity: int = 2,
+    window: Window = "open",
+    status: PublicationStatus = PublicationStatus.PUBLISHED,
+):
+    """An organizer, a published event and one session (published by default)."""
     organizer = await make_account(db, role=Role.ORGANIZER)
     event = await make_event(db, organizer)
-    session = await make_session(db, event, capacity=capacity, window=window)
+    session = await make_session(
+        db, event, capacity=capacity, window=window, status=status
+    )
     return organizer, event, session

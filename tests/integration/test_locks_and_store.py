@@ -16,6 +16,7 @@ from app.db.locks import (
 )
 from app.db.participation_store import (
     active_attempt,
+    apply_transition,
     attempts_in_states,
     bump_version,
     due_attempts,
@@ -23,7 +24,6 @@ from app.db.participation_store import (
     queue_head,
     record_change,
     session_counts,
-    transition,
     waitlist_position,
 )
 from app.domain.enums import EndReason, ParticipationState, TransitionReason
@@ -61,9 +61,7 @@ async def test_account_and_queue_head_locks(session_factory):
         a, b = await make_account(db), await make_account(db)
 
     async with session_factory.begin() as db:
-        locked = await lock_account_scope(
-            db, share_ids=[b.id], exclusive_ids=[a.id, b.id]
-        )
+        locked = await lock_account_scope(db, share_ids=[b.id], exclusive_ids=[a.id, b.id])
         assert list(locked.accounts) == sorted([a.id, b.id])
         head = await lock_queue_head_account(db, a.id)
         assert head.account.id == a.id
@@ -89,12 +87,8 @@ async def test_store_helpers(session_factory):
     async with session_factory.begin() as db:
         scope = await lock_session_scope(db, session.id)
         held = await make_held(db, scope.session, a)
-        wb = await make_waiting(
-            db, scope.session, b, await next_queue_seq(db, scope.session)
-        )
-        wc = await make_waiting(
-            db, scope.session, c, await next_queue_seq(db, scope.session)
-        )
+        wb = await make_waiting(db, scope.session, b, await next_queue_seq(db, scope.session))
+        wc = await make_waiting(db, scope.session, c, await next_queue_seq(db, scope.session))
         assert (wb.queue_seq, wc.queue_seq) == (1, 2)
         assert await bump_version(db, scope.session) == 1
 
@@ -102,14 +96,9 @@ async def test_store_helpers(session_factory):
         cid = uuid.uuid4()
         # The factory wrote change 1 (BOOKED); the next one is numbered 2.
         change = await record_change(
-            db,
-            participation_id=held.id,
-            from_state=ParticipationState.HELD,
-            to_state=ParticipationState.CONFIRMED,
-            reason_code="PAYMENT_CONFIRMED",
-            occurred_at=now,
-            correlation_id=cid,
-            actor_id=a.id,
+            db, participation_id=held.id, from_state=ParticipationState.HELD,
+            to_state=ParticipationState.CONFIRMED, reason_code="PAYMENT_CONFIRMED",
+            occurred_at=now, correlation_id=cid, actor_id=a.id,
         )
         assert change.change_no == 2
 
@@ -132,7 +121,7 @@ async def _history(db, participation_id) -> list[ParticipationChange]:
     )
 
 
-async def test_transition_sets_target_fields_and_appends_history(session_factory):
+async def test_apply_transition_sets_target_fields_and_appends_history(session_factory):
     async with session_factory.begin() as db:
         _, _, session = await make_scope(db, capacity=5)
         a, b, c, d = [await make_account(db) for _ in range(4)]
@@ -151,7 +140,7 @@ async def test_transition_sets_target_fields_and_appends_history(session_factory
             for p in (waiting, to_confirm, to_expire, to_decline)
         }
         common = {"now": now, "correlation_id": cid}
-        await transition(
+        await apply_transition(
             db,
             rows[waiting.id],
             S.OFFERED,
@@ -160,7 +149,7 @@ async def test_transition_sets_target_fields_and_appends_history(session_factory
             deadline_at=deadline,
             **common,
         )
-        await transition(
+        await apply_transition(
             db,
             rows[to_confirm.id],
             S.CONFIRMED,
@@ -168,7 +157,7 @@ async def test_transition_sets_target_fields_and_appends_history(session_factory
             actor_id=b.id,
             **common,
         )
-        await transition(
+        await apply_transition(
             db,
             rows[to_expire.id],
             S.EXPIRED,
@@ -176,7 +165,7 @@ async def test_transition_sets_target_fields_and_appends_history(session_factory
             actor_id=None,
             **common,
         )
-        await transition(
+        await apply_transition(
             db,
             rows[to_decline.id],
             S.CANCELLED,
@@ -221,7 +210,7 @@ async def test_transition_sets_target_fields_and_appends_history(session_factory
         assert (declined.change_no, declined.actor_id) == (3, d.id)
 
 
-async def test_transition_refuses_bad_requests_without_writing(session_factory):
+async def test_apply_transition_refuses_bad_requests_without_writing(session_factory):
     async with session_factory.begin() as db:
         _, _, session = await make_scope(db)
         a, b = await make_account(db), await make_account(db)
@@ -236,7 +225,7 @@ async def test_transition_refuses_bad_requests_without_writing(session_factory):
         waiting = await db.get(Participation, waiting.id)
 
         with pytest.raises(ValueError, match="illegal transition"):
-            await transition(
+            await apply_transition(
                 db,
                 held,
                 S.OFFERED,
@@ -245,11 +234,11 @@ async def test_transition_refuses_bad_requests_without_writing(session_factory):
                 **common,
             )
         with pytest.raises(ValueError, match="deadline_at"):
-            await transition(
+            await apply_transition(
                 db, waiting, S.OFFERED, reason_code=TransitionReason.PROMOTED, **common
             )
         with pytest.raises(ValueError, match="deadline_at"):
-            await transition(
+            await apply_transition(
                 db,
                 held,
                 S.EXPIRED,

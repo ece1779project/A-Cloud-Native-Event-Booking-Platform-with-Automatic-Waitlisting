@@ -23,10 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.core.metrics import PROMOTION_LATENCY
 from app.db.locks import LockedScope, lock_session_scope
 from app.db.participation_store import (
+    apply_transition,
     attempts_in_states,
     bump_version,
     due_attempts,
-    transition,
 )
 from app.domain.enums import EndReason, ParticipationState
 from app.models.participation import Participation
@@ -58,7 +58,7 @@ async def expire_if_overdue(
     state = S(participation.state)
     if state not in _EXPIRY_REASON or scope.now < participation.deadline_at:
         return []
-    await transition(
+    await apply_transition(
         db,
         participation,
         S.EXPIRED,
@@ -84,7 +84,7 @@ async def end_waiting_if_closed(
         or scope.now < scope.session.registration_closes_at
     ):
         return []
-    await transition(
+    await apply_transition(
         db,
         participation,
         S.CANCELLED,
@@ -100,12 +100,12 @@ async def expire_due(
     db: AsyncSession, scope: LockedScope, *, correlation_id: uuid.UUID
 ) -> list[ParticipationTransition]:
     """Expire every overdue hold and offer of the locked session."""
-    changes: list[ParticipationTransition] = []
+    transitions: list[ParticipationTransition] = []
     for participation in await due_attempts(db, scope.session.id, scope.now):
-        changes += await expire_if_overdue(
+        transitions += await expire_if_overdue(
             db, scope, participation, correlation_id=correlation_id
         )
-    return changes
+    return transitions
 
 
 async def close_registration(
@@ -116,18 +116,18 @@ async def close_registration(
     Never promotes. Does nothing before the close."""
     if scope.now < scope.session.registration_closes_at:
         return []
-    changes: list[ParticipationTransition] = []
+    transitions: list[ParticipationTransition] = []
     rows = await attempts_in_states(
         db, scope.session.id, (S.HELD, S.OFFERED, S.WAITLISTED)
     )
     for participation in rows:
-        changes += await expire_if_overdue(
+        transitions += await expire_if_overdue(
             db, scope, participation, correlation_id=correlation_id
         )
-        changes += await end_waiting_if_closed(
+        transitions += await end_waiting_if_closed(
             db, scope, participation, correlation_id=correlation_id
         )
-    return changes
+    return transitions
 
 
 # Transaction owners
@@ -212,9 +212,9 @@ async def close_session(
     """Apply registration closure to one session."""
     async with session_factory.begin() as db:
         scope = await lock_session_scope(db, session_id)
-        changes = await close_registration(db, scope, correlation_id=uuid.uuid7())
+        transitions = await close_registration(db, scope, correlation_id=uuid.uuid7())
         return await build_session_change(
-            db, scope, ChangeCause.REGISTRATION_CLOSED, changes
+            db, scope, ChangeCause.REGISTRATION_CLOSED, transitions
         )
 
 
@@ -227,10 +227,10 @@ async def promote_session(
     """The promotion scan's transaction: offer any free seats to waiters."""
     async with session_factory.begin() as db:
         scope = await lock_session_scope(db, session_id)
-        changes = await promote_waiters(
+        transitions = await promote_waiters(
             db,
             scope,
             offer_validity_seconds=offer_validity_seconds,
             correlation_id=uuid.uuid7(),
         )
-        return await build_session_change(db, scope, ChangeCause.PROMOTION, changes)
+        return await build_session_change(db, scope, ChangeCause.PROMOTION, transitions)

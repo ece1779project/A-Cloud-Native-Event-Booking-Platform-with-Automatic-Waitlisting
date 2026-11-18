@@ -38,7 +38,7 @@ Leave the other message models and reason enums to Yifeng. Add a short comment t
 
 ### 3.2 Additions to `app/db/participation_store.py`
 
-- `transition(db, participation, to_state, *, reason_code, now, correlation_id, actor_id, deadline_at=None) -> None`. Raises `ValueError` when `can_transition` refuses, so a bug never reaches the trigger. Sets the fields the target state needs: `allocated_at` and `deadline_at` for `OFFERED`, `confirmed_at` for `CONFIRMED`, `ended_at` and `end_reason` for `CANCELLED` and `EXPIRED`. Then calls `record_change`. It decides nothing else.
+- `apply_transition(db, participation, to_state, *, reason_code, now, correlation_id, actor_id, deadline_at=None) -> None`. Raises `ValueError` when `can_transition` refuses, so a bug never reaches the trigger. Sets the fields the target state needs: `allocated_at` and `deadline_at` for `OFFERED`, `confirmed_at` for `CONFIRMED`, `ended_at` and `end_reason` for `CANCELLED` and `EXPIRED`. Then calls `record_change`. It decides nothing else.
 - `due_attempts(db, session_id, now) -> list[Participation]`: `HELD` and `OFFERED` rows with `deadline_at <= now`, ordered by `deadline_at, id`.
 - `attempts_in_states(db, session_id, states) -> list[Participation]`: ordered by `queue_seq NULLS FIRST, id`, used by closure.
 
@@ -48,7 +48,7 @@ Both reads use `populate_existing` like the existing queries.
 
 `make_account(disabled=False)`; `make_session(status=..., window="open" | "closed" | "not_open")`; `make_scope(window=...)`; `make_held(overdue=False)`; `make_offered(queue_seq, overdue=False)`; `make_confirmed`. An overdue row is allocated ten minutes ago with a deadline one minute ago, which satisfies `deadline_at > allocated_at`. A closed window keeps `opens_at < closes_at <= starts_at`.
 
-Every participation builder also writes its history: `BOOKED` for a hold, `ENQUEUED` for a waiter, `ENQUEUED` then `PROMOTED` for an offer, `BOOKED` then `PAYMENT_CONFIRMED` for a confirmed row. Without it, the first `transition` on a factory row would be history change 1 with a non-null source state, which the `first_has_no_source` check rejects. Two existing tests that inserted change 1 by hand now rely on the factory instead (`test_history_tables_are_append_only`, `test_store_helpers`).
+Every participation builder also writes its history: `BOOKED` for a hold, `ENQUEUED` for a waiter, `ENQUEUED` then `PROMOTED` for an offer, `BOOKED` then `PAYMENT_CONFIRMED` for a confirmed row. Without it, the first `apply_transition` on a factory row would be history change 1 with a non-null source state, which the `first_has_no_source` check rejects. Two existing tests that inserted change 1 by hand now rely on the factory instead (`test_history_tables_are_append_only`, `test_store_helpers`).
 
 ### 3.4 Tests
 
@@ -123,7 +123,7 @@ Each holds a candidate query and a call to one transaction owner.
 
 Load settings, create the engine and session factory, call `logging.basicConfig` (switch to `core/logging.py` when it exists), build the four scans, and run their loops as tasks with a no-op `publish`. On `SIGTERM` or `SIGINT`, set `stop`, let the current transactions finish, and exit within 20 seconds. Keep `main()` a flat list of tasks so Yifeng can add the health server as one more task.
 
-Add a `worker` service to `compose.yaml`: same image, `command: ["/app/.venv/bin/python", "-m", "app.workers"]`, depends on `migrate` completing. No port and no healthcheck yet; those come with Yifeng's server, at the `TODO(Yifeng)` in `main()`. If one loop dies with an error, `main()` stops the others and exits non-zero so the supervisor restarts the process.
+Add a `worker` service to `compose.yaml`: same image, `command: ["/app/.venv/bin/python", "-m", "app.workers"]`, depends on `migrate` completing. No port and no healthcheck yet; those come with Yifeng's server, at the `TODO(Yifeng)` in `main()`. The loops catch their own errors, so `main()` only waits for the stop signal and then gives the loops `SHUTDOWN_GRACE_SECONDS` to finish. Locally, send `SIGTERM` to the Python process or press Ctrl-C; `uv run` does not forward `SIGTERM`.
 
 ### 5.5 Tests
 
@@ -140,6 +140,10 @@ Add a `worker` service to `compose.yaml`: same image, `command: ["/app/.venv/bin
 - Recovery (FR-07.11): prepare overdue rows, start a fresh runner; the backlog clears and the stored deadlines are unchanged.
 
 Finish Phase 3 by updating TECHNICAL_DESIGN Section 2 (promotion, expiration and the worker loops are implemented).
+
+### 5.6 Cleanup before the first pull request (done)
+
+A review of the whole branch found no correctness problems. Four cleanups were applied: the store function is now `apply_transition` and service locals that hold `ParticipationTransition` lists are named `transitions`; the worker shutdown no longer handles a loop dying, which cannot happen; tests share `tests/helpers.py` (`OFFER_VALIDITY`, `reload`, `session_version`, `latest_history`, `expire`, `promote`), `make_scope` takes `status`, and the runner tests use `publish_nothing`; Jiawei's existing test lines keep their original formatting.
 
 ## 6. After my teammates' work lands
 

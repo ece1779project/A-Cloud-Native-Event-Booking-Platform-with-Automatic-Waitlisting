@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.constants import MAX_OFFERS_PER_TRANSACTION
 from app.db.locks import LockedScope, lock_queue_head_account
-from app.db.participation_store import queue_head, session_counts, transition
+from app.db.participation_store import apply_transition, queue_head, session_counts
 from app.domain.enums import (
     EndReason,
     ParticipationState,
@@ -61,7 +61,7 @@ async def promote_waiters(
         return []
 
     free = session.capacity - (await session_counts(db, session.id)).occupied
-    changes: list[ParticipationTransition] = []
+    transitions: list[ParticipationTransition] = []
     offers = 0
     while free > 0 and offers < MAX_OFFERS_PER_TRANSACTION:
         head = await queue_head(db, session.id)
@@ -74,7 +74,7 @@ async def promote_waiters(
             break
 
         if locked.account.disabled_at is not None:
-            await transition(
+            await apply_transition(
                 db,
                 head,
                 ParticipationState.CANCELLED,
@@ -84,7 +84,7 @@ async def promote_waiters(
                 actor_id=None,
             )
         else:
-            await transition(
+            await apply_transition(
                 db,
                 head,
                 ParticipationState.OFFERED,
@@ -98,5 +98,5 @@ async def promote_waiters(
             )
             free -= 1
             offers += 1
-        changes.append(ParticipationTransition.of(head))
-    return changes
+        transitions.append(ParticipationTransition.of(head))
+    return transitions

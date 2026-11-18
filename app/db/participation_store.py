@@ -198,7 +198,7 @@ async def attempts_in_states(
     )
 
 
-async def transition(
+async def apply_transition(
     db: AsyncSession,
     participation: Participation,
     to_state: ParticipationState,
