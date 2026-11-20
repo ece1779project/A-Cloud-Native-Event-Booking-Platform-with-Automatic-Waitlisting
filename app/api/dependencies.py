@@ -15,7 +15,8 @@ from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 
 import jwt
-from fastapi import Depends, Request
+from fastapi import Depends, Header, Request
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,7 +28,9 @@ from app.core.rate_limit import RateLimiter
 from app.core.security import decode_access_token
 from app.domain.enums import Role
 from app.models.account import Account
-from app.schemas.common import Meta
+from app.schemas.common import Envelope, ErrorBody, ErrorEnvelope, Meta
+from app.schemas.realtime import SessionChange
+from app.services.idempotency import CommandOutcome
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -142,3 +145,64 @@ async def limit_registration_writes(
         settings.registration_write_limit_per_minute,
     )
     return account
+
+
+# ---- Business commands: Idempotency-Key, outcome rendering, publication ----
+
+
+async def idempotency_key(
+    key: str | None = Header(default=None, alias="Idempotency-Key"),
+) -> uuid.UUID:
+    """Required on every authenticated business command (7.5). Declare it after
+    the account dependency so an anonymous call is 401 before it is 422."""
+    if not key:
+        raise AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Idempotency-Key header is required.",
+            details={"header": "Idempotency-Key"},
+        )
+    try:
+        return uuid.UUID(key)
+    except ValueError as exc:
+        raise AppError(
+            ErrorCode.VALIDATION_ERROR,
+            "Idempotency-Key must be a UUID.",
+            details={"header": "Idempotency-Key"},
+        ) from exc
+
+
+def outcome_response(request: Request, outcome: CommandOutcome) -> JSONResponse:
+    """Render a command outcome, fresh or replayed, with its original status.
+    Success carries the result code in ``meta.result``; a stored rejection
+    uses the error envelope and is never retryable."""
+    m = meta(
+        request,
+        session_version=outcome.session_version,
+        result=None if outcome.is_error else outcome.result_code,
+    )
+    if outcome.is_error:
+        body = ErrorEnvelope(
+            error=ErrorBody(
+                code=outcome.result_code,
+                message=outcome.message or outcome.result_code,
+                retryable=False,
+                details=outcome.payload,
+            ),
+            meta=m,
+        )
+    else:
+        body = Envelope[dict](data=outcome.payload, meta=m)
+    return JSONResponse(body.model_dump(mode="json"), status_code=outcome.http_status)
+
+
+async def publish_after_commit(request: Request, changes: list[SessionChange]) -> None:
+    """Hand one commit's ``SessionChange`` values to the real-time publisher.
+
+    Called by routes only after the service returned, i.e. after commit.
+    Publication is best effort and never changes the HTTP result (7.6).
+    """
+    if not changes:
+        return
+    # TODO(realtime): Yifeng's app.realtime.publisher is still a stub. Once it
+    # exists: await publisher.publish(request.app.state.redis, changes)
+
