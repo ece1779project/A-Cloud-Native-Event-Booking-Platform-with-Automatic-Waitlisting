@@ -6,10 +6,7 @@ from sqlalchemy import func, select
 
 from app.core.errors import AppError, ErrorCode
 from app.models.request_result import RequestResult
-try:
-    from app.services.idempotency import CommandOutcome, parameter_hash, run_command
-except ImportError as exc:
-    pytest.skip(f"第 07 章未完成: {exc}", allow_module_level=True)
+from app.services.idempotency import CommandOutcome, parameter_hash, run_command
 from tests.factories import make_account
 
 

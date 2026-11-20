@@ -9,7 +9,7 @@ Design: TECHNICAL_DESIGN.md Section 7.4; DATABASE_DESIGN.md Section 4.
 """
 
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,25 +22,25 @@ from app.domain.enums import (
     PublicationStatus,
     TransitionReason,
 )
+from app.domain.timing import (
+    RegistrationStatus,
+    allocation_deadline,
+    registration_status,
+)
 from app.models.event import Event
 from app.models.event_session import EventSession
 from app.schemas.realtime import ParticipationTransition
-
-# TODO: switch both helpers to app.domain.timing once Jiawei merges it.
 
 
 def _registration_open(event: Event, session: EventSession, now: datetime) -> bool:
     return (
         event.status == PublicationStatus.PUBLISHED
         and session.status == PublicationStatus.PUBLISHED
-        and session.registration_opens_at <= now < session.registration_closes_at
+        and registration_status(
+            session.registration_opens_at, session.registration_closes_at, now
+        )
+        == RegistrationStatus.OPEN
     )
-
-
-def _offer_deadline(
-    now: datetime, validity_seconds: int, closes_at: datetime
-) -> datetime:
-    return min(now + timedelta(seconds=validity_seconds), closes_at)
 
 
 async def promote_waiters(
@@ -92,7 +92,7 @@ async def promote_waiters(
                 now=now,
                 correlation_id=correlation_id,
                 actor_id=None,
-                deadline_at=_offer_deadline(
+                deadline_at=allocation_deadline(
                     now, offer_validity_seconds, session.registration_closes_at
                 ),
             )

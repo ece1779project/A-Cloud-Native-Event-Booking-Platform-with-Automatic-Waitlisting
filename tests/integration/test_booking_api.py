@@ -24,7 +24,7 @@ async def test_book_hold_then_waitlist_required(client, make_user, session_facto
 
     r = await client.post(f"/api/v1/sessions/{sid}/book", headers=b | idem())
     assert r.status_code == 409 and r.json()["error"]["code"] == "WAITLIST_REQUIRED"
-    assert r.json()["error"]["details"]["available_count"] == 0
+    assert r.json()["error"]["details"]["availability"]["available_count"] == 0
 
 
 async def test_repeat_book_returns_existing(client, make_user):

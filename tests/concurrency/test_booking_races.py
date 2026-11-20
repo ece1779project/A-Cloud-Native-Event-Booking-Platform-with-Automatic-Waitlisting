@@ -3,21 +3,17 @@
 import asyncio
 import uuid
 
-import pytest
 from sqlalchemy import func, select
 
+from app.core.errors import AppError
 from app.db.participation_store import capacity_violations, session_counts
 from app.models.participation import Participation
-try:
-    from app.services import booking, participations as psvc, sessions as ssvc
-    from app.schemas.sessions import SessionPatch
-    from app.db.locks import lock_session_scope
-    from app.db.participation_store import bump_version
-    from app.domain.timing import is_overdue
-    from app.services.expiration import expire_attempt
-except ImportError as exc:
-    pytest.skip(f"第 08/09 章未完成: {exc}", allow_module_level=True)
+from app.schemas.sessions import SessionPatch
+from app.services import booking
+from app.services import participations as psvc
+from app.services import sessions as ssvc
 from tests.factories import make_account, make_scope
+from tests.helpers import expire
 
 
 async def _world(session_factory, *, capacity: int, attendees: int):
@@ -69,15 +65,9 @@ async def test_same_key_concurrent_retries(session_factory, settings):
     assert sum(not r.replayed for r in results) == 1
 
 
-async def _worker_expire(session_factory, participation_id, session_id):
-    async with session_factory.begin() as db:
-        scope = await lock_session_scope(db, session_id)
-        p = await db.get(Participation, participation_id, populate_existing=True)
-        if p.state in ("HELD", "OFFERED") and is_overdue(p.deadline_at, scope.now):
-            await expire_attempt(db, p, now=scope.now, correlation_id=uuid.uuid4())
-            await bump_version(db, scope.session)
-            return "EXPIRED"
-        return "NOOP"   # stale candidate
+async def _worker_expire(session_factory, session_id):
+    """The expiry worker's real transaction; ``None`` means a stale candidate."""
+    return "EXPIRED" if await expire(session_factory, session_id) else "NOOP"
 
 
 async def test_confirm_vs_expire_single_outcome(session_factory, settings):
@@ -91,7 +81,7 @@ async def test_confirm_vs_expire_single_outcome(session_factory, settings):
         confirm, worker = await asyncio.gather(
             psvc.confirm(session_factory, short, account=a, participation_id=held.participation_id,
                          simulation_result="success", request_id=uuid.uuid4()),
-            _worker_expire(session_factory, held.participation_id, session.id),
+            _worker_expire(session_factory, session.id),
         )
         async with session_factory() as db:
             p = await db.get(Participation, held.participation_id)
@@ -115,8 +105,8 @@ async def test_capacity_reduction_vs_booking(session_factory, settings):
             await ssvc.patch_session(session_factory, settings, organizer, session.id,
                                      SessionPatch(capacity=2))
             return "SHRUNK"
-        except Exception as exc:   # AppError(CAPACITY_BELOW_OCCUPIED)
-            return getattr(exc, "code", exc)
+        except AppError as exc:   # CAPACITY_BELOW_OCCUPIED
+            return exc.code
 
     book, shrink_result = await asyncio.gather(
         booking.book(session_factory, settings, account=people[2], session_id=session.id,

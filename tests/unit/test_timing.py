@@ -1,13 +1,13 @@
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
-try:
-    from app.domain.timing import (
-        RegistrationStatus as R, allocation_deadline, is_overdue, registration_status,
-    )
-except ImportError as exc:
-    pytest.skip(f"第 06 章未完成: {exc}", allow_module_level=True)
+from app.domain.timing import (
+    RegistrationStatus as R,
+)
+from app.domain.timing import (
+    allocation_deadline,
+    is_overdue,
+    registration_status,
+)
 
 T = datetime(2026, 11, 15, 12, tzinfo=UTC)
 H = timedelta(hours=1)
