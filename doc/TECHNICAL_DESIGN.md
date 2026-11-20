@@ -1034,13 +1034,13 @@ Scans run every second by default:
 3. Open sessions that have both free capacity and waiters.
 4. The capacity-invariant query used for alerting.
 
-Candidate selection does not grant authority to mutate. For each candidate, the worker starts a new transaction, invokes the common lock entry point, reloads state, reads database time, and either applies one valid transition or does nothing. Expiration and closure transactions promote eligible waiters when registration remains open.
+Each scan selects candidates in a short read transaction. For each candidate session, the worker opens a write transaction, locks the session scope and rechecks state against database time. All transitions in the transaction share one correlation ID and have a null actor. A changed session gets one version bump and one `SessionChange`. A stale candidate leaves the version unchanged. Workers rely on these state checks for idempotency and write no command receipt.
 
-The expiry scan groups candidates by session. One transaction takes the session lock, reads database time once, and expires every overdue `HELD` and `OFFERED` attempt of that session, then promotes, so the session version advances once and one `SessionChange` describes all of them. Worker transitions record a null `actor_id`.
+The expiry scan processes the oldest deadlines first. Under the session lock, it expires all due `HELD` and `OFFERED` rows. If any expired, it runs FIFO promotion in the same transaction. Promotion rechecks registration using fresh database time after each queue-head account lock.
 
-At registration close, the worker changes outstanding `HELD` and `OFFERED` rows to `EXPIRED` with their corresponding expiration reason, changes `WAITLISTED` rows to `CANCELLED` with `REGISTRATION_CLOSED`, and leaves `CONFIRMED` rows unchanged. It issues no new offers at or after close. Each transition retains history and increments the session version.
+At registration close, due holds and offers expire with their respective reasons, waiters are cancelled with `REGISTRATION_CLOSED`, and confirmed rows retain their seats. Closure issues no offers.
 
-Multiple workers may scan concurrently. Batches may distribute independent sessions with `SKIP LOCKED`, but promotion inside one session always reads the true lowest eligible `queue_seq`.
+Concurrent workers serialize on the session lock. The implementation selects candidates without `SKIP LOCKED`. If metrics show contention, independent sessions may be distributed across workers while preserving FIFO order within each session.
 
 On shutdown, workers stop taking candidates and finish or roll back active transactions within the Kubernetes termination grace period. On restart, all work is rediscovered from PostgreSQL; no in-process timer or Redis message is required.
 
@@ -1227,6 +1227,8 @@ Labels use bounded values such as service, operation, outcome, and error code. A
 
 `worker_last_scan_timestamp_seconds` is a gauge, one series per scan loop. Its label `scan` is `expiry`, `closure`, `promotion`, or `invariant`. The value is the Unix time of the last pass that finished without a dependency failure. `worker_oldest_overdue_seconds` measures due rows that are still waiting. It does not say whether the loop is still running.
 
+For `waitlist_promotion_latency_seconds` with cause `expiration`, pair new offers in queue order with expired deadlines in ascending order. Record each offer's allocation time minus its paired deadline after commit. For cancellation-driven promotions, derive report latency from the release and offer history rows in `participation_changes` that share a correlation ID.
+
 Grafana dashboards cover:
 
 - API traffic, latency, unexpected errors, and business outcomes.
@@ -1256,6 +1258,15 @@ Testing focuses on the risks that define the project:
 - Frontend and WebSocket tests cover reconnects, missing or out-of-order messages, polling fallback, and stale-version rejection.
 - Deployment tests verify migrations, persistent restarts, Redis/PostgreSQL outages, and Kubernetes rollouts.
 - Load tests measure correctness, latency, worker backlog, database connections, and HPA behavior under the PRD's acceptance workload.
+
+Participation factories seed the history needed for the next transition. When a test mixes factory-created waiters with a service-level join, set the session's `last_queue_seq` to the highest seeded queue number first. `make_waiting` leaves that counter unchanged.
+
+Run the PostgreSQL-backed suite locally with:
+
+```bash
+docker run -d --rm --name booking-test-db -p 55432:5432 -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=booking_test postgres:18
+TEST_DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1:55432/booking_test uv run pytest
+```
 
 Detailed scenarios and target values remain defined in PRD Section 2 and the acceptance cases in `DATABASE_DESIGN.md`. Test reports record the environment and mark each result as passed, failed, or not executed.
 
