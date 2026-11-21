@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - gateway.yaml
+  - scaling.yaml
+  - network-policies.yaml
+
+images:
+  - name: seatflow-app
+    newName: registry.digitalocean.com/seatflow/app
+    newTag: latest
+  - name: seatflow-frontend
+    newName: registry.digitalocean.com/seatflow/frontend
+    newTag: latest
+
+patches:
+  - target:
+      kind: ConfigMap
+      name: seatflow-config
+    patch: |-
+      - op: replace
+        path: /data/ENVIRONMENT
+        value: doks
+      - op: replace
+        path: /data/CORS_ALLOWED_ORIGINS
+        value: https://events.example.com

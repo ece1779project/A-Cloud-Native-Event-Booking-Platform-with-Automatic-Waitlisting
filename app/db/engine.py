@@ -10,7 +10,7 @@ Design: TECHNICAL_DESIGN.md Sections 7.1 and 13.4; DATABASE_DESIGN.md Section 6.
 
 from datetime import datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -24,10 +24,11 @@ from app.core.constants import (
     DB_LOCK_TIMEOUT,
     DB_STATEMENT_TIMEOUT,
 )
+from app.core.metrics import DB_POOL_CONNECTIONS
 
 
 def create_engine(settings: Settings) -> AsyncEngine:
-    return create_async_engine(
+    engine = create_async_engine(
         settings.database_url,
         pool_size=settings.db_pool_size,
         max_overflow=settings.db_max_overflow,
@@ -41,6 +42,26 @@ def create_engine(settings: Settings) -> AsyncEngine:
             }
         },
     )
+    _instrument_pool(engine)
+    return engine
+
+
+def _instrument_pool(engine: AsyncEngine) -> None:
+    @event.listens_for(engine.sync_engine, "connect")
+    def connected(_connection, _record) -> None:
+        DB_POOL_CONNECTIONS.labels("open").inc()
+
+    @event.listens_for(engine.sync_engine, "close")
+    def closed(_connection, _record) -> None:
+        DB_POOL_CONNECTIONS.labels("open").dec()
+
+    @event.listens_for(engine.sync_engine, "checkout")
+    def checked_out(_connection, _record, _proxy) -> None:
+        DB_POOL_CONNECTIONS.labels("checked_out").inc()
+
+    @event.listens_for(engine.sync_engine, "checkin")
+    def checked_in(_connection, _record) -> None:
+        DB_POOL_CONNECTIONS.labels("checked_out").dec()
 
 
 def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:

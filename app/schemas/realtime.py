@@ -7,10 +7,11 @@ Design: TECHNICAL_DESIGN.md Sections 10.1, 10.3, and 10.5.
 """
 
 import uuid
+from datetime import datetime
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.enums import ParticipationState
 
@@ -94,3 +95,130 @@ class SessionChange(BaseModel):
 
 
 # WebSocket messages (TECHNICAL_DESIGN 10.1 and 10.5)
+
+
+class SessionChangedReason(StrEnum):
+    PARTICIPATION_CHANGED = "participation_changed"
+    CAPACITY_CHANGED = "capacity_changed"
+    SESSION_PUBLISHED = "session_published"
+    SESSION_CANCELLED = "session_cancelled"
+    EVENT_CANCELLED = "event_cancelled"
+    REGISTRATION_CLOSED = "registration_closed"
+
+
+class ManagementChangedReason(StrEnum):
+    ROSTER_CHANGED = "roster_changed"
+    SESSION_UPDATED = "session_updated"
+    EVENT_UPDATED = "event_updated"
+
+
+class AuthRevokedReason(StrEnum):
+    ACCOUNT_DISABLED = "account_disabled"
+
+
+class ResyncRequiredReason(StrEnum):
+    REDIS_RECONNECTED = "redis_reconnected"
+
+
+class RealtimeMessage(BaseModel):
+    """Strict, immutable base for server-to-client messages."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class SessionChanged(RealtimeMessage):
+    type: Literal["session.changed"] = "session.changed"
+    event_id: uuid.UUID
+    session_id: uuid.UUID
+    version: int = Field(ge=0)
+    reason: SessionChangedReason
+    occurred_at: datetime
+
+
+class ParticipationChanged(RealtimeMessage):
+    type: Literal["participation.changed"] = "participation.changed"
+    session_id: uuid.UUID
+    participation_id: uuid.UUID
+    version: int = Field(ge=0)
+    reason: ParticipationChangedReason
+    occurred_at: datetime
+
+
+class SessionVersion(RealtimeMessage):
+    session_id: uuid.UUID
+    version: int = Field(ge=0)
+
+
+class ManagementChanged(RealtimeMessage):
+    type: Literal["management.changed"] = "management.changed"
+    event_id: uuid.UUID
+    sessions: tuple[SessionVersion, ...]
+    reason: ManagementChangedReason
+    occurred_at: datetime
+
+
+class AuthRevoked(RealtimeMessage):
+    type: Literal["auth.revoked"] = "auth.revoked"
+    reason: AuthRevokedReason = AuthRevokedReason.ACCOUNT_DISABLED
+    occurred_at: datetime
+
+
+class SystemResyncRequired(RealtimeMessage):
+    type: Literal["system.resync_required"] = "system.resync_required"
+    reason: ResyncRequiredReason = ResyncRequiredReason.REDIS_RECONNECTED
+    occurred_at: datetime
+
+
+class ConnectionReady(RealtimeMessage):
+    type: Literal["connection.ready"] = "connection.ready"
+    connection_id: uuid.UUID
+    account_id: uuid.UUID | None
+    heartbeat_interval_seconds: Literal[25] = 25
+
+
+class SubscriptionRejection(RealtimeMessage):
+    channel: str
+    code: Literal["RESOURCE_NOT_FOUND", "FORBIDDEN", "INVALID_CHANNEL"]
+
+
+class SubscriptionAck(RealtimeMessage):
+    type: Literal["subscription.ack"] = "subscription.ack"
+    request_id: uuid.UUID
+    accepted: tuple[str, ...]
+    rejected: tuple[SubscriptionRejection, ...]
+
+
+ServerMessage = Annotated[
+    SessionChanged
+    | ParticipationChanged
+    | ManagementChanged
+    | AuthRevoked
+    | SystemResyncRequired
+    | ConnectionReady
+    | SubscriptionAck,
+    Field(discriminator="type"),
+]
+
+
+class SubscriptionRequest(BaseModel):
+    """Client-to-gateway subscribe or unsubscribe command."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["subscribe", "unsubscribe"]
+    request_id: uuid.UUID
+    channels: tuple[str, ...]
+
+
+class TicketScope(StrEnum):
+    PUBLIC = "public"
+    ACCOUNT = "account"
+    MANAGEMENT = "management"
+
+
+class TicketResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    ticket: str
+    expires_in: Literal[30] = 30
+    scopes: tuple[TicketScope, ...]

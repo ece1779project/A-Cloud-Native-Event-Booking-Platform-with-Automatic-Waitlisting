@@ -1,0 +1,8 @@
+{
+  "type": "participation.changed",
+  "session_id": "22222222-2222-4222-8222-222222222222",
+  "participation_id": "44444444-4444-4444-8444-444444444444",
+  "version": 13,
+  "reason": "offer_created",
+  "occurred_at": "2026-11-14T22:00:01Z"
+}

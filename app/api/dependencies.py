@@ -12,6 +12,7 @@ Design: TECHNICAL_DESIGN.md Sections 7.5, 8.1, 9.3 and 9.5.
 
 import uuid
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import jwt
@@ -35,6 +36,10 @@ from app.services.idempotency import CommandOutcome
 _bearer = HTTPBearer(auto_error=False)
 
 
+@dataclass(frozen=True, slots=True)
+class AccessContext:
+    account: Account
+    expires_at: datetime
 
 
 def get_settings_dep(request: Request) -> Settings:
@@ -61,7 +66,9 @@ def meta(request: Request, session_version: int | None = None, result: str | Non
 
 
 
-async def _account_from_token(request: Request, token: str) -> Account:
+async def _access_context_from_token(
+    request: Request, token: str
+) -> AccessContext:
     settings: Settings = request.app.state.settings
     _, public_key = settings.require_jwt_keys()
     try:
@@ -72,6 +79,7 @@ async def _account_from_token(request: Request, token: str) -> Account:
             audience=settings.jwt_audience,
         )
         account_id = uuid.UUID(claims["sub"])
+        expires_at = datetime.fromtimestamp(claims["exp"], UTC)
     except jwt.ExpiredSignatureError as exc:
         raise AppError(ErrorCode.TOKEN_EXPIRED) from exc
     except (jwt.InvalidTokenError, ValueError) as exc:
@@ -83,7 +91,11 @@ async def _account_from_token(request: Request, token: str) -> Account:
         raise AppError(ErrorCode.AUTHENTICATION_REQUIRED)
     if account.disabled_at is not None:
         raise AppError(ErrorCode.ACCOUNT_DISABLED)
-    return account
+    return AccessContext(account=account, expires_at=expires_at)
+
+
+async def _account_from_token(request: Request, token: str) -> Account:
+    return (await _access_context_from_token(request, token)).account
 
 
 async def get_current_account(
@@ -102,6 +114,15 @@ async def get_optional_account(
     if creds is None:
         return None
     return await _account_from_token(request, creds.credentials)
+
+
+async def get_optional_access_context(
+    request: Request,
+    creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
+) -> AccessContext | None:
+    if creds is None:
+        return None
+    return await _access_context_from_token(request, creds.credentials)
 
 
 def require_roles(*roles: Role) -> Callable:
