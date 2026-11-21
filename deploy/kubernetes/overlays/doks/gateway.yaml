@@ -1,0 +1,100 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: seatflow
+spec:
+  gatewayClassName: cilium
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      hostname: events.example.com
+      allowedRoutes:
+        namespaces:
+          from: Same
+    - name: https
+      protocol: HTTPS
+      port: 443
+      hostname: events.example.com
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: seatflow-tls
+      allowedRoutes:
+        namespaces:
+          from: Same
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: redirect-http
+spec:
+  parentRefs:
+    - name: seatflow
+      sectionName: http
+  hostnames: [events.example.com]
+  rules:
+    - filters:
+        - type: RequestRedirect
+          requestRedirect:
+            scheme: https
+            statusCode: 301
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api
+spec:
+  parentRefs:
+    - name: seatflow
+      sectionName: https
+  hostnames: [events.example.com]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1
+      timeouts:
+        request: 30s
+      backendRefs:
+        - name: api
+          port: 8000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: websocket
+spec:
+  parentRefs:
+    - name: seatflow
+      sectionName: https
+  hostnames: [events.example.com]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /ws/v1
+      timeouts:
+        request: 1h
+      backendRefs:
+        - name: websocket
+          port: 8000
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: frontend
+spec:
+  parentRefs:
+    - name: seatflow
+      sectionName: https
+  hostnames: [events.example.com]
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: frontend
+          port: 8080

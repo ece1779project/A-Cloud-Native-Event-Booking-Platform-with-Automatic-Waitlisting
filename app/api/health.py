@@ -2,7 +2,7 @@
 
 ``/health/live`` checks only that the event loop responds and calls no
 dependency. ``/health/ready`` checks PostgreSQL and Redis and returns 503 when
-either fails. ``/metrics`` will be added.
+either fails. Metrics are served separately by ``app.api.metrics``.
 
 Design: TECHNICAL_DESIGN.md Section 13.3.
 """
@@ -10,7 +10,10 @@ Design: TECHNICAL_DESIGN.md Section 13.3.
 import asyncio
 
 from fastapi import APIRouter, Request, Response
+from redis.exceptions import RedisError
 from sqlalchemy import text
+
+from app.core.metrics import REDIS_OPERATION_FAILURES
 
 router = APIRouter(prefix="/health", tags=["health"])
 
@@ -41,4 +44,8 @@ async def _check_db(request: Request) -> None:
 
 
 async def _check_redis(request: Request) -> None:
-    await request.app.state.redis.ping()
+    try:
+        await request.app.state.redis.ping()
+    except RedisError:
+        REDIS_OPERATION_FAILURES.labels("health_ping").inc()
+        raise

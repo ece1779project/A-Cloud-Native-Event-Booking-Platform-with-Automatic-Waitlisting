@@ -7,6 +7,31 @@ Design: TECHNICAL_DESIGN.md Section 14.
 
 from prometheus_client import Counter, Gauge, Histogram
 
+# API HTTP transport. ``route`` is the route template, never the raw path.
+
+HTTP_REQUESTS = Counter(
+    "http_requests",
+    "HTTP requests completed by method, route template, and status.",
+    ["method", "route", "status"],
+)
+HTTP_REQUEST_DURATION = Histogram(
+    "http_request_duration_seconds",
+    "HTTP request duration by method and route template.",
+    ["method", "route"],
+)
+
+# Shared dependencies.
+DB_POOL_CONNECTIONS = Gauge(
+    "db_pool_connections",
+    "Database pool connections by state.",
+    ["state"],
+)
+REDIS_OPERATION_FAILURES = Counter(
+    "redis_operation_failures",
+    "Redis operations that failed by bounded operation name.",
+    ["operation"],
+)
+
 # Workers. Label ``scan`` is expiry, closure, promotion or invariant.
 
 WORKER_SCAN_DURATION = Histogram(
@@ -39,4 +64,23 @@ PROMOTION_LATENCY = Histogram(
 )
 CAPACITY_VIOLATIONS = Gauge(
     "capacity_violations", "Sessions whose occupied seats exceed capacity."
+)
+
+# Real-time gateway and post-commit publication.
+REALTIME_PUBLISH_FAILURES = Counter(
+    "realtime_publish_failures",
+    "Redis Pub/Sub messages that could not be published after commit.",
+    ["message_type"],
+)
+WEBSOCKET_CONNECTIONS = Gauge(
+    "websocket_connections", "WebSocket connections currently open."
+)
+WEBSOCKET_MESSAGES = Counter(
+    "websocket_messages",
+    "WebSocket messages handled by direction and bounded message type.",
+    ["direction", "message_type"],
+)
+WEBSOCKET_RECONNECTS = Counter(
+    "websocket_reconnects",
+    "Redis Pub/Sub reconnections made by a WebSocket gateway.",
 )
