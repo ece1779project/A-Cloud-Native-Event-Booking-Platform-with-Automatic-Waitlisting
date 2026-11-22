@@ -4,7 +4,7 @@ Version: 1.5
 Date: 2026-11-22  
 Status: Proposed target design; implementation pending
 
-Changes in 1.5: decline and leave are implemented on the shared cancel path. A command on an ended attempt returns `200` unchanged only when its own end reason is recorded, and a command never turns into another (Sections 7.3 and 8.4). The promotion latency report and the in-process acceptance tests are added (Sections 2, 5, 5.1 and 15). Compose passes `.env` to the API and the worker (Section 13.1).
+Changes in 1.5: decline and leave are implemented on the shared cancel path. A command on an ended attempt returns `200` unchanged only when its own end reason is recorded, and a command never turns into another (Sections 7.3 and 8.4). The promotion latency report and the in-process acceptance tests are added (Sections 2, 5, 5.1 and 15). Compose passes `.env` to the API and the worker (Section 13.1). Three accepted limitations are added (Section 18).
 
 Changes in 1.4: an enabled account is the only eligibility rule in this release, so `INELIGIBLE` is reserved and unused (Section 7.4).
 
@@ -445,6 +445,8 @@ Every command on an existing participation (confirm, cancel, decline, leave, and
 The command then validates against the resulting state, so an attendee acting late meets the same outcome the worker would have written.
 
 Attendee cancel, decline, and leave differ only in the states they accept (`HELD` or `CONFIRMED`, `OFFERED`, `WAITLISTED`), the end reason they write (`USER_CANCELLED`, `OFFER_DECLINED`, `WITHDRAWN`), and whether they free a seat (leave does not). One function in `services/participations.py` implements all three, so they share the check order and the two rules below.
+
+The check order: someone else's attempt returns `404` and stores nothing; a receipt that committed while the command waited is replayed; an expiry or closure written by the two steps above returns its `409` and commits; an ended attempt follows the repeat rule; a confirmed booking after the session start returns `409 SESSION_STARTED`; a state outside the command's own returns `409 INVALID_STATE_TRANSITION`; otherwise the attempt ends with the caller as actor, and a freed seat is offered in the same transaction. Every `409` stores a receipt.
 
 - Repeat rule: on an attempt that has already ended, a command returns `200` with the unchanged result only when its own end reason is recorded. Administrator cancel follows the same rule with `ADMIN_CANCELLED`. An attempt that ended any other way returns the `409` for that ending: `PARTICIPATION_EXPIRED`, `REGISTRATION_CLOSED`, `SESSION_CANCELLED`, `EVENT_CANCELLED`, or otherwise `INVALID_STATE_TRANSITION`.
 - No conversion: a command never turns into another. Leave on an `OFFERED` attempt, or decline on a `HELD` one, returns `409 INVALID_STATE_TRANSITION` and changes nothing. The client refetches and shows the right action.
@@ -1362,5 +1364,8 @@ Accepted first-release limitations:
 - Account disablement does not automatically cancel a confirmed booking.
 - Linear throughput improvement from additional API replicas is not promised.
 - Redis inventory pre-deduction remains an optional, isolated experiment and is not part of the baseline booking path.
+- A capacity increase does not expire overdue attempts first, so it may offer fewer seats than are about to be freed. The expiry scan closes the gap within about a second.
+- Promotions inside attendee and administrator commands record no live latency metric. `python -m app.cli.promotion_report` measures them offline from history.
+- Decline and leave keep the `SESSION_STARTED` check although valid data cannot reach it: by the start, every hold and offer has expired and every waiter has been closed.
 
 Any change to capacity guarantees, FIFO fairness, persistence semantics, real payment scope, or the authoritative role of PostgreSQL requires a PRD update and a reviewed design revision.
