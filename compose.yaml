@@ -14,6 +14,9 @@ services:
 
   api:
     build: .
+    env_file:
+      - path: .env
+        required: false
     ports:
       - "${API_PORT:-8000}:8000"
     environment:
@@ -35,6 +38,9 @@ services:
   worker:
     build: .
     command: ["/app/.venv/bin/python", "-m", "app.workers"]
+    env_file:
+      - path: .env
+        required: false
     environment: *app-env
     depends_on:
       migrate:

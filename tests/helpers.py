@@ -5,7 +5,7 @@ the worker services with the default offer validity."""
 import uuid
 from collections.abc import Iterable
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models.event_session import EventSession
@@ -44,6 +44,29 @@ async def latest_history(
             .order_by(ParticipationChange.change_no.desc())
             .limit(1)
         )
+
+
+# An offer made while an older waiter of the same session was still waiting.
+_FIFO_VIOLATIONS = text(
+    """
+    SELECT o.participation_id
+    FROM participation_changes o
+    JOIN participations p ON p.id = o.participation_id
+    JOIN participations w ON w.session_id = p.session_id AND w.queue_seq < p.queue_seq
+    JOIN participation_changes wj ON wj.participation_id = w.id AND wj.to_state = 'WAITLISTED'
+    LEFT JOIN participation_changes wl
+      ON wl.participation_id = w.id AND wl.from_state = 'WAITLISTED'
+    WHERE o.to_state = 'OFFERED'
+      AND wj.occurred_at < o.occurred_at
+      AND (wl.occurred_at IS NULL OR wl.occurred_at > o.occurred_at)
+    """
+)
+
+
+async def fifo_violations(session_factory: SessionFactory) -> list[uuid.UUID]:
+    """Offers that skipped an older waiter. Must always be empty."""
+    async with session_factory() as db:
+        return list(await db.scalars(_FIFO_VIOLATIONS))
 
 
 async def expire(
