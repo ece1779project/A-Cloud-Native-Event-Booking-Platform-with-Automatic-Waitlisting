@@ -67,7 +67,9 @@ def database_url() -> str:
 
 @pytest_asyncio.fixture
 async def engine(database_url):
-    engine = create_engine(Settings(database_url=database_url, redis_url="redis://unused"))
+    engine = create_engine(
+        Settings(_env_file=None, database_url=database_url, redis_url="redis://unused")
+    )
     async with engine.begin() as conn:
         await conn.execute(text(f"TRUNCATE {TABLES}"))
     yield engine
@@ -95,7 +97,9 @@ def jwt_keys() -> tuple[str, str]:
 # ---- Chapters 03 and 09: settings shared by integration and concurrency tests ----
 @pytest.fixture
 def settings(database_url, jwt_keys) -> Settings:
+    # Ignore .env, so local demo values (e.g. short validity) never reach the tests.
     return Settings(
+        _env_file=None,
         database_url=database_url,
         redis_url="redis://unused",
         jwt_private_key=jwt_keys[0],

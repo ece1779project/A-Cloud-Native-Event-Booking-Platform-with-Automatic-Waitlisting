@@ -9,6 +9,7 @@ Date: 2026-11-22 · Branch: `jianye/decline-leave` · Based on `main` at `d14b99
 - **2026-11-17 · Promotion and expiration.** Implemented FIFO offers, hold and offer expiration, and registration closure. Expiration and replacement offers share one transaction and version bump. The suite passed all 59 tests.
 - **2026-11-17 · Workers and validation.** Added the Compose worker, its expiry, closure, promotion and capacity scans, and their metrics. Consolidated test helpers before review. All 75 tests and Ruff passed. Race tests passed five consecutive runs, and a smoke run verified expiry, replacement offers, capacity-violation reporting and graceful shutdown.
 - **2026-11-22 · Plan for the remaining work.** Reviewed `main` after Jiawei's booking merge (#10). Decline and leave no longer wait on anyone and need no migration: the state machine, the trigger and the check constraints already allow both transitions. The suite passes 228 tests once the `httpx` import is fixed (Step 1). Jiawei already replaced the private timing helpers in `services/promotion.py` in `cf7693a`, so that item is closed. This plan covers only my own work. It touches teammates' files only where that work needs it, which they agreed to.
+- **2026-11-22 · Steps 1 to 3.** The suite runs from a clean `uv sync` on Python 3.14 and Ruff is clean. Cancel, decline and leave share `_release`; cancel and administrator cancel follow the repeat rule. Added 45 tests (`test_decline_leave.py`, authorization matrix and contract rows). All 273 tests pass.
 
 ## Decisions (2026-11-22)
 
@@ -25,9 +26,9 @@ Date: 2026-11-22 · Branch: `jianye/decline-leave` · Based on `main` at `d14b99
 
 | Step | Work | Main files |
 | --- | --- | --- |
-| 1 | Test and lint baseline | `tests/integration/conftest.py`, `tests/conftest.py`, `pyproject.toml`, `.python-version`, `app/schemas/common.py` |
-| 2 | Shared release command, decline and leave | `app/services/participations.py`, `app/api/v1/participations.py` |
-| 3 | Tests for decline, leave and the repeat rule | `tests/integration/test_decline_leave.py`, `tests/factories.py`, two existing test files |
+| 1 | Test and lint baseline (done) | `tests/integration/conftest.py`, `tests/conftest.py`, `pyproject.toml`, `.python-version`, `app/schemas/common.py` |
+| 2 | Shared release command, decline and leave (done) | `app/services/participations.py`, `app/api/v1/participations.py` |
+| 3 | Tests for decline, leave and the repeat rule (done) | `tests/integration/test_decline_leave.py`, `tests/factories.py`, two existing test files |
 | 4 | Races | `tests/concurrency/test_release_races.py`, `tests/helpers.py` |
 | 5 | Promotion latency report | `app/cli/promotion_report.py` |
 | 6 | Joint validation | `tests/concurrency/test_acceptance.py` |
@@ -45,7 +46,7 @@ docker run -d --rm --name booking-test-db -p 55432:5432 -e POSTGRES_USER=test -e
 TEST_DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1:55432/booking_test uv run pytest
 ```
 
-## Step 1: Test and lint baseline
+## Step 1: Test and lint baseline (done 2026-11-22)
 
 After a clean `uv sync`, `tests/integration` fails to collect (`No module named 'httpx'`), and Ruff reports 77 errors. Until both are fixed, none of my later tests can run on a clean checkout, and lint cannot gate the PR.
 
@@ -68,7 +69,7 @@ After a clean `uv sync`, `tests/integration` fails to collect (`No module named 
 
 Done when: in a fresh clone, `uv sync` followed by the full suite passes on Python 3.14 with no alias, and `uv run ruff check .` reports nothing.
 
-## Step 2: Decline and leave on a shared release command
+## Step 2: Decline and leave on a shared release command (done 2026-11-22)
 
 Cancel, decline and leave differ only in three ways: the states they accept, the end reason they write, and whether they free a seat. One private function implements all three, so the check order and the repeat rule cannot drift apart.
 
@@ -122,7 +123,7 @@ Behavior change to tell Jiawei about: cancel on an attempt ended by session or e
 
 Done when: the existing suite is green, and the generated OpenAPI shows both routes with the `Idempotency-Key` header.
 
-## Step 3: Tests for decline, leave and the repeat rule
+## Step 3: Tests for decline, leave and the repeat rule (done 2026-11-22)
 
 Add a `"started"` window to `_WINDOWS` in `tests/factories.py`: `(-3, -2, -1, 1)` hours.
 

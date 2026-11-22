@@ -40,6 +40,11 @@ CASES = [
     ("confirm someone else's", "POST", "/api/v1/participations/{participation}/confirm",
      {"simulation_result": "failure"}, True,
      dict(anon=401, a1=200, a2=404, o1=404, o2=404, admin=404)),
+    # a1 owns the attempt, but it is HELD, so decline and leave are 409.
+    ("decline someone else's", "POST", "/api/v1/participations/{participation}/decline", None, True,
+     dict(anon=401, a1=409, a2=404, o1=404, o2=404, admin=404)),
+    ("leave someone else's", "POST", "/api/v1/participations/{participation}/leave", None, True,
+     dict(anon=401, a1=409, a2=404, o1=404, o2=404, admin=404)),
     ("admin list accounts", "GET", "/api/v1/admin/accounts", None, False,
      dict(anon=401, a1=403, a2=403, o1=403, o2=403, admin=200)),
 ]
