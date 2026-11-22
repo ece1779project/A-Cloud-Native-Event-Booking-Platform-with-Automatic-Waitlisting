@@ -10,6 +10,7 @@ Date: 2026-11-22 · Branch: `jianye/decline-leave` · Based on `main` at `d14b99
 - **2026-11-17 · Workers and validation.** Added the Compose worker, its expiry, closure, promotion and capacity scans, and their metrics. Consolidated test helpers before review. All 75 tests and Ruff passed. Race tests passed five consecutive runs, and a smoke run verified expiry, replacement offers, capacity-violation reporting and graceful shutdown.
 - **2026-11-22 · Plan for the remaining work.** Reviewed `main` after Jiawei's booking merge (#10). Decline and leave no longer wait on anyone and need no migration: the state machine, the trigger and the check constraints already allow both transitions. The suite passes 228 tests once the `httpx` import is fixed (Step 1). Jiawei already replaced the private timing helpers in `services/promotion.py` in `cf7693a`, so that item is closed. This plan covers only my own work. It touches teammates' files only where that work needs it, which they agreed to.
 - **2026-11-22 · Steps 1 to 3.** The suite runs from a clean `uv sync` on Python 3.14 and Ruff is clean. Cancel, decline and leave share `_release`; cancel and administrator cancel follow the repeat rule. Added 45 tests (`test_decline_leave.py`, authorization matrix and contract rows). All 273 tests pass.
+- **2026-11-22 · Steps 4 to 6.** Added `fifo_violations`, six release races, `python -m app.cli.promotion_report` and the acceptance tests. All 288 tests and Ruff pass. Evidence on an Apple M4 Pro (14 cores, 24 GB) with PostgreSQL 18.6 in Docker: ten capacity rounds (capacity 20, 100 clients, 1,000 commands each) passed with no capacity violation, duplicate active attempt or FIFO violation; promotion latency was n=120, P95 1.02 s, max 1.10 s for expiration and n=120, P95 0.004 s for cancellation. Of 24 runs of `tests/concurrency`, one failed once and could not be reproduced in the next 18; its output was not kept, so the test is unknown.
 
 ## Decisions (2026-11-22)
 
@@ -29,9 +30,9 @@ Date: 2026-11-22 · Branch: `jianye/decline-leave` · Based on `main` at `d14b99
 | 1 | Test and lint baseline (done) | `tests/integration/conftest.py`, `tests/conftest.py`, `pyproject.toml`, `.python-version`, `app/schemas/common.py` |
 | 2 | Shared release command, decline and leave (done) | `app/services/participations.py`, `app/api/v1/participations.py` |
 | 3 | Tests for decline, leave and the repeat rule (done) | `tests/integration/test_decline_leave.py`, `tests/factories.py`, two existing test files |
-| 4 | Races | `tests/concurrency/test_release_races.py`, `tests/helpers.py` |
-| 5 | Promotion latency report | `app/cli/promotion_report.py` |
-| 6 | Joint validation | `tests/concurrency/test_acceptance.py` |
+| 4 | Races (done) | `tests/concurrency/test_release_races.py`, `tests/helpers.py` |
+| 5 | Promotion latency report (done) | `app/cli/promotion_report.py` |
+| 6 | Joint validation (done) | `tests/concurrency/test_acceptance.py` |
 | 7 | Publication matrix check on `SessionChange` | `tests/integration/test_session_changes.py` |
 | 8 | Validity settings for the demo | `compose.yaml`, `.env.example` |
 | 9 | Documents | `doc/TECHNICAL_DESIGN.md`, `doc/DATABASE_DESIGN.md`, `doc/openapi.yaml`, this file |
@@ -195,7 +196,7 @@ Existing files:
 
 Done when: every case above passes, and at least one test exercises each row of the Step 2 table.
 
-## Step 4: Races
+## Step 4: Races (done 2026-11-22)
 
 First move the FIFO audit query from Step 6 into `tests/helpers.py` as `fifo_violations(session_factory)`, so this step can use it.
 
@@ -222,7 +223,7 @@ New file `tests/concurrency/test_release_races.py`, over independent connections
 
 Done when: the file passes five consecutive runs.
 
-## Step 5: Promotion latency report
+## Step 5: Promotion latency report (done 2026-11-22)
 
 The PRD requires at least 100 observations per category, with P95 at most 5 s, measured "from the hold deadline or successful cancellation commit to persistence of a waitlist offer". Today only the expiry scan records a live histogram, and nothing measures cancellations.
 
@@ -247,7 +248,7 @@ Test `tests/integration/test_promotion_report.py`:
 
 Done when: the test passes, and the command prints a report against the Compose database.
 
-## Step 6: Joint validation
+## Step 6: Joint validation (done 2026-11-22)
 
 New file `tests/concurrency/test_acceptance.py`. Jiawei reviews it, but nothing in it waits for him.
 
