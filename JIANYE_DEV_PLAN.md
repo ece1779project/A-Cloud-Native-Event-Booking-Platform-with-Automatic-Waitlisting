@@ -11,6 +11,7 @@ Date: 2026-11-22 · Branch: `jianye/decline-leave` · Based on `main` at `d14b99
 - **2026-11-22 · Plan for the remaining work.** Reviewed `main` after Jiawei's booking merge (#10). Decline and leave no longer wait on anyone and need no migration: the state machine, the trigger and the check constraints already allow both transitions. The suite passes 228 tests once the `httpx` import is fixed (Step 1). Jiawei already replaced the private timing helpers in `services/promotion.py` in `cf7693a`, so that item is closed. This plan covers only my own work. It touches teammates' files only where that work needs it, which they agreed to.
 - **2026-11-22 · Steps 1 to 3.** The suite runs from a clean `uv sync` on Python 3.14 and Ruff is clean. Cancel, decline and leave share `_release`; cancel and administrator cancel follow the repeat rule. Added 45 tests (`test_decline_leave.py`, authorization matrix and contract rows). All 273 tests pass.
 - **2026-11-22 · Steps 4 to 6.** Added `fifo_violations`, six release races, `python -m app.cli.promotion_report` and the acceptance tests. All 288 tests and Ruff pass. Evidence on an Apple M4 Pro (14 cores, 24 GB) with PostgreSQL 18.6 in Docker: ten capacity rounds (capacity 20, 100 clients, 1,000 commands each) passed with no capacity violation, duplicate active attempt or FIFO violation; promotion latency was n=120, P95 1.02 s, max 1.10 s for expiration and n=120, P95 0.004 s for cancellation. Of 24 runs of `tests/concurrency`, one failed once and could not be reproduced in the next 18; its output was not kept, so the test is unknown.
+- **2026-11-22 · Steps 7 to 9.** `test_session_changes.py` checks 19 cases against the publication matrix: cause, transition reasons, and one version bump per changed session. Compose passes `.env` to the API and the worker; with a sample `.env`, `docker compose config` shows both validity values on both services, and the assembled `DATABASE_URL` still wins. The technical design (1.5), the database design (1.6) and the OpenAPI descriptions state the repeat and no-conversion rules. All 307 tests and Ruff pass on Python 3.14.
 
 ## Decisions (2026-11-22)
 
@@ -33,9 +34,9 @@ Date: 2026-11-22 · Branch: `jianye/decline-leave` · Based on `main` at `d14b99
 | 4 | Races (done) | `tests/concurrency/test_release_races.py`, `tests/helpers.py` |
 | 5 | Promotion latency report (done) | `app/cli/promotion_report.py` |
 | 6 | Joint validation (done) | `tests/concurrency/test_acceptance.py` |
-| 7 | Publication matrix check on `SessionChange` | `tests/integration/test_session_changes.py` |
-| 8 | Validity settings for the demo | `compose.yaml`, `.env.example` |
-| 9 | Documents | `doc/TECHNICAL_DESIGN.md`, `doc/DATABASE_DESIGN.md`, `doc/openapi.yaml`, this file |
+| 7 | Publication matrix check on `SessionChange` (done) | `tests/integration/test_session_changes.py` |
+| 8 | Validity settings for the demo (done) | `compose.yaml`, `.env.example` |
+| 9 | Documents (done) | `doc/TECHNICAL_DESIGN.md`, `doc/DATABASE_DESIGN.md`, `doc/openapi.yaml`, this file |
 | 10 | Final verification and demo | none |
 
 Suggested commits, one per step: `test: run on a clean checkout`, `feat: decline and leave`, `test: decline and leave`, `test: release races`, `feat: promotion latency report`, `test: acceptance rounds`, `test: session changes follow the publication matrix`, `chore: pass validity settings to compose`, `docs: decline, leave and the repeat rule`.
@@ -311,7 +312,7 @@ WHERE o.to_state = 'OFFERED'
 
 Done when: the file passes in the normal suite, and one run with `ACCEPTANCE_ROUNDS=10` is recorded in the progress log, with the machine details and the latency figures.
 
-## Step 7: Publication matrix check on `SessionChange`
+## Step 7: Publication matrix check on `SessionChange` (done 2026-11-22)
 
 `SessionChange` and its enums are mine, and they are the publisher's only input. This step checks every value against TECHNICAL_DESIGN 10.5 now, so integrating the publisher later should not require changes on my side.
 
@@ -329,7 +330,7 @@ New file `tests/integration/test_session_changes.py`, one table-driven test over
 
 Done when: the test passes.
 
-## Step 8: Validity settings for the demo
+## Step 8: Validity settings for the demo (done 2026-11-22)
 
 The demo needs short validity periods set through the environment, but Compose passes neither variable today. The API and the worker must also share `OFFER_VALIDITY_SECONDS`, because both create offers.
 
@@ -341,7 +342,7 @@ The demo needs short validity periods set through the environment, but Compose p
 
 Done when: with a sample `.env`, `docker compose config` shows both validity values on both services.
 
-## Step 9: Documents
+## Step 9: Documents (done 2026-11-22)
 
 Only what this branch changes:
 
@@ -352,7 +353,7 @@ Only what this branch changes:
   - Section 7.3: add the repeat rule and the no-conversion rule.
   - Section 8.4: "repeated terminal command" now means the command's own end reason is recorded.
   - Section 15: no alias, Python 3.14, and `ACCEPTANCE_ROUNDS`.
-- `doc/DATABASE_DESIGN.md`, version 1.5: in "Confirm, cancel, decline or leave", step 5 states the repeat rule.
+- `doc/DATABASE_DESIGN.md`, version 1.6 (it was already 1.5): in "Confirm, cancel, decline or leave", step 5 states the repeat rule.
 - `doc/openapi.yaml`: update the descriptions of cancel, decline, leave and administrator cancel.
   - State the repeat rule.
   - List the 409 codes each command can return.

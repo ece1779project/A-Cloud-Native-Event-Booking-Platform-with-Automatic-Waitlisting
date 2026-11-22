@@ -1,10 +1,12 @@
 # Database design specification
 
 Cloud-Native Event Booking Platform with Automatic Waitlisting  
-Design version 1.5 · 17 November 2026 · Proposed schema for PRD 1.2  
+Design version 1.6 · 22 November 2026 · Proposed schema for PRD 1.2  
 Requirements source: [Product requirements document](PRD.md) · Implementation design: [Technical design document](TECHNICAL_DESIGN.md)
 
 Terms follow the PRD's terminology table. "Session" always means an event session. A SQLAlchemy session is written `AsyncSession`. Attendees cancel a hold or confirmed booking, decline an offer and leave the waitlist; all three end in `CANCELLED`.
+
+Changes in 1.6: cancel, decline and leave accept only their own states, and a repeated command returns the unchanged result only when its own end reason is recorded (section 4).
 
 Changes in 1.5: `INELIGIBLE` is reserved, because an enabled account is the only eligibility rule in this release (section 4).
 
@@ -248,7 +250,7 @@ Every command below runs after the locks and clock read described above. Every t
 2. If a hold or offer is overdue, record its expiration first. The attendee's action then meets an expired attempt.
 3. If registration has closed, end a waiting entry with `REGISTRATION_CLOSED` even if the worker is late.
 4. Confirm: a successful simulation sets `CONFIRMED` and `confirmed_at`. A failed simulation leaves the state and deadline intact and can be retried with a new request ID before the original deadline.
-5. Cancel, decline and leave are allowed only before the session starts. A repeated request changes zero seats.
+5. Cancel, decline and leave are allowed only before the session starts, each from its own states: cancel from `HELD` or `CONFIRMED`, decline from `OFFERED`, leave from `WAITLISTED`. A command never turns into another. On an attempt that has already ended, a command returns the unchanged result only when its own end reason is recorded (`USER_CANCELLED`, `OFFER_DECLINED`, `WITHDRAWN`, or `ADMIN_CANCELLED` for administrator cancel); any other ending returns the conflict for that ending. A repeated request changes zero seats.
 6. If the command freed a seat, run the promote steps in the same transaction.
 
 **Change capacity**
