@@ -1,8 +1,10 @@
 # Technical Design Document: Cloud-Native Event Booking Platform
 
-Version: 1.5  
+Version: 1.6  
 Date: 2026-11-22  
 Status: Proposed target design; implementation pending
+
+Changes in 1.6: management commands (event, session and administrator account) now require `Idempotency-Key` and store a receipt; only a success is stored, a rejection rolls back and leaves the key unused (Section 7.5). `app.cli.export_openapi` is implemented. `INTERNAL_ERROR` (`500`) is listed for unexpected failures (Section 8.5). Section 2 lists the completed account, management and booking work.
 
 Changes in 1.5: decline and leave are implemented on the shared cancel path. A command on an ended attempt returns `200` unchanged only when its own end reason is recorded, and a command never turns into another (Sections 7.3 and 8.4). The promotion latency report and the in-process acceptance tests are added (Sections 2, 5, 5.1 and 15). Compose passes `.env` to the API and the worker (Section 13.1). Three accepted limitations are added (Section 18).
 
@@ -26,17 +28,16 @@ Requirement identifiers such as FR-04 and NFR-01 refer to the PRD.
 
 The following work remains to be implemented:
 
-- Business transactions built on the database layer: booking, confirmation, cancellation, and idempotency receipts.
-- Account registration, authentication, authorization, and administration.
-- Event, session, booking, confirmation, cancellation, or waitlist APIs.
-- Redis rate limiting or post-commit notifications.
-- WebSocket gateway and frontend.
+- Post-commit notifications: the routes and services hand `SessionChange` values to `publish_after_commit`, which publishes nothing until `app.realtime.publisher` exists.
+- WebSocket gateway, real-time ticket issuance (`POST /realtime/tickets`) and frontend.
 - The worker's health and metrics server on `WORKER_METRICS_PORT`.
 - Kubernetes manifests, migration jobs, monitoring, dashboards, alerts, or load tests.
 
 The package skeleton in Section 5 is in place: every module exists with a statement of its responsibility. The database layer is implemented and tested: settings, the engine, the SQLAlchemy models, both Alembic revisions, the lock entry point, the participation store, and the `/health/live` and `/health/ready` endpoints. Compose runs the migration before it starts the API.
 
 Promotion and expiration are implemented and tested: the steps in `services/promotion.py` and `services/expiration.py` (Sections 7.3 and 7.4), the `SessionChange` result in `schemas/realtime.py` (Section 10.3), the four worker scans with their loop, shutdown and metrics (Sections 11 and 14), and a `worker` service in Compose. Workers publish nothing until the publisher exists.
+
+Accounts and the API are implemented and tested: registration, login with refresh rotation and logout, the current account, role checks, administrator account changes and the bootstrap command (Sections 8.2 and 9); Redis write rate limiting with the per-replica fallback; event and session management with publication, schedule freeze, capacity changes and cancellation (Section 8.3); booking, waitlist join, confirmation, cancellation, administrator cancellation and the stored-result lookup (Sections 7.2, 7.3 and 8.4). Every authenticated business command, attendee and management alike, requires `Idempotency-Key` and stores its receipt in the transaction with its effects (Section 7.5); `python -m app.cli.export_openapi` writes the generated contract (Section 8.1).
 
 Decline and leave are implemented and tested. They share one release command with attendee cancel (Section 7.3). `python -m app.cli.promotion_report` measures promotion latency offline from `participation_changes` (Section 14). `tests/concurrency/test_acceptance.py` runs the PRD capacity rounds and the other joint validation scenarios in process (Section 15); the HTTP load test waits for the deployment.
 
@@ -672,6 +673,7 @@ Dependency and concurrency errors:
 - `LOCK_TIMEOUT` (`503`, retryable)
 - `DATABASE_UNAVAILABLE` (`503`, retryable)
 - `SERVICE_UNAVAILABLE` (`503`, retryable)
+- `INTERNAL_ERROR` (`500`, not retryable): any unexpected exception; the response carries no internal detail
 
 Expected business rejections are not logged as server errors and are counted separately from unexpected `5xx` responses.
 

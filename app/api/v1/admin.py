@@ -73,18 +73,19 @@ async def patch_account(
     account_id: uuid.UUID,
     body: AdminAccountPatch,
     admin: Account = Depends(require_admin),
+    key: uuid.UUID = Depends(idempotency_key),
     factory=Depends(get_factory),
 ):
-    # TODO(idempotency): require Idempotency-Key as doc/openapi.yaml specifies.
-    account = await accounts_service.admin_patch_account(
+    outcome = await accounts_service.admin_patch_account(
         factory,
         actor=admin,
         target_id=account_id,
         role=Role(body.role) if body.role else None,
         disabled=body.disabled,
         reason=body.reason,
+        request_id=key,
     )
-    return Envelope(data=AccountView.of(account), meta=meta(request))
+    return outcome_response(request, outcome, with_result=False)
 
 
 @router.post(

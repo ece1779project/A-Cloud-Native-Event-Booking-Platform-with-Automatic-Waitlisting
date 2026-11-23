@@ -1186,6 +1186,7 @@ components:
         - LOCK_TIMEOUT
         - DATABASE_UNAVAILABLE
         - SERVICE_UNAVAILABLE
+        - INTERNAL_ERROR
 
     # ---------- envelope pieces
     Meta:

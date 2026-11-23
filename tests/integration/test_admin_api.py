@@ -3,6 +3,7 @@ from sqlalchemy import select
 from app.domain.enums import Role
 from app.models.auth_session import AuthSession
 from app.models.management_action import ManagementAction
+from tests.integration.conftest import idem
 
 
 async def test_non_admin_forbidden(client, make_user):
@@ -20,7 +21,7 @@ async def test_promote_to_organizer_is_audited(client, make_user, session_factor
     target, _ = await make_user(Role.ATTENDEE)
     r = await client.patch(
         f"/api/v1/admin/accounts/{target.id}",
-        headers=admin,
+        headers=admin | idem(),
         json={"role": "ORGANIZER", "reason": "runs workshops"},
     )
     assert r.status_code == 200 and r.json()["data"]["role"] == "ORGANIZER"
@@ -36,7 +37,7 @@ async def test_disable_revokes_sessions_and_blocks_access(
     target, target_headers = await make_user(Role.ATTENDEE)
     r = await client.patch(
         f"/api/v1/admin/accounts/{target.id}",
-        headers=admin,
+        headers=admin | idem(),
         json={"disabled": True, "reason": "abuse"},
     )
     assert r.status_code == 200
@@ -55,14 +56,14 @@ async def test_patch_requires_reason_and_a_change(client, make_user):
     target, _ = await make_user()
     url = f"/api/v1/admin/accounts/{target.id}"
     assert (
-        await client.patch(url, headers=admin, json={"role": "ORGANIZER"})
+        await client.patch(url, headers=admin | idem(), json={"role": "ORGANIZER"})
     ).status_code == 422
     assert (
-        await client.patch(url, headers=admin, json={"reason": "x"})
+        await client.patch(url, headers=admin | idem(), json={"reason": "x"})
     ).status_code == 422
     assert (
         await client.patch(
-            url, headers=admin, json={"role": "ORGANIZER", "reason": "  "}
+            url, headers=admin | idem(), json={"role": "ORGANIZER", "reason": "  "}
         )
     ).status_code == 422
 
@@ -71,7 +72,7 @@ async def test_unknown_account_404(client, make_user):
     _, admin = await make_user(Role.ADMIN)
     r = await client.patch(
         "/api/v1/admin/accounts/00000000-0000-7000-8000-000000000000",
-        headers=admin,
+        headers=admin | idem(),
         json={"disabled": True, "reason": "x"},
     )
     assert r.status_code == 404
@@ -83,7 +84,7 @@ async def test_cannot_change_self_or_another_admin(client, make_user):
     for target in (me, other):
         r = await client.patch(
             f"/api/v1/admin/accounts/{target.id}",
-            headers=admin,
+            headers=admin | idem(),
             json={"disabled": True, "reason": "x"},
         )
         assert r.status_code == 403 and r.json()["error"]["code"] == "FORBIDDEN"
@@ -94,7 +95,7 @@ async def test_admin_role_cannot_be_granted(client, make_user):
     target, _ = await make_user()
     r = await client.patch(
         f"/api/v1/admin/accounts/{target.id}",
-        headers=admin,
+        headers=admin | idem(),
         json={"role": "ADMIN", "reason": "x"},
     )
     assert r.status_code == 422
@@ -107,9 +108,13 @@ async def test_enable_after_disable_is_audited_and_old_tokens_stay_revoked(
     target, _ = await make_user()
     url = f"/api/v1/admin/accounts/{target.id}"
     assert (
-        await client.patch(url, headers=admin, json={"disabled": True, "reason": "a"})
+        await client.patch(
+            url, headers=admin | idem(), json={"disabled": True, "reason": "a"}
+        )
     ).status_code == 200
-    r = await client.patch(url, headers=admin, json={"disabled": False, "reason": "b"})
+    r = await client.patch(
+        url, headers=admin | idem(), json={"disabled": False, "reason": "b"}
+    )
     assert r.status_code == 200 and r.json()["data"]["disabled"] is False
     async with session_factory() as db:
         actions = [
@@ -132,7 +137,7 @@ async def test_unchanged_value_writes_no_audit(client, make_user, session_factor
     target, _ = await make_user(Role.ATTENDEE)
     r = await client.patch(
         f"/api/v1/admin/accounts/{target.id}",
-        headers=admin,
+        headers=admin | idem(),
         json={"role": "ATTENDEE", "reason": "noop"},
     )
     assert r.status_code == 200

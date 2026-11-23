@@ -43,6 +43,12 @@ from app.schemas.events import EventCreate, EventPatch, EventView
 from app.schemas.realtime import ChangeCause, ParticipationTransition, SessionChange
 from app.schemas.sessions import SessionView
 from app.services.audit import record_action
+from app.services.idempotency import (
+    CommandContext,
+    CommandOutcome,
+    management_outcome,
+    run_management,
+)
 
 Factory = async_sessionmaker[AsyncSession]
 
@@ -180,43 +186,72 @@ async def _lock_event(
 
 
 async def create_event(
-    factory: Factory, actor: Account, body: EventCreate
-) -> EventView:
-    async with factory.begin() as db:
+    factory: Factory, actor: Account, body: EventCreate, *, request_id: uuid.UUID
+) -> CommandOutcome:
+    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
         # The owner is the caller, never a request field. New events are drafts.
         event = Event(organizer_id=actor.id, **body.model_dump())
         db.add(event)
         await db.flush()
         await db.refresh(event)
-    return EventView.of(event)
+        return management_outcome(EventView.of(event), http_status=201)
+
+    return await run_management(
+        factory,
+        actor_id=actor.id,
+        request_id=request_id,
+        operation="create_event",
+        params=body.model_dump(mode="json"),
+        execute=execute,
+    )
 
 
 async def patch_event(
-    factory: Factory, actor: Account, event_id: uuid.UUID, body: EventPatch
-) -> EventView:
+    factory: Factory,
+    actor: Account,
+    event_id: uuid.UUID,
+    body: EventPatch,
+    *,
+    request_id: uuid.UUID,
+) -> CommandOutcome:
     changes = body.model_dump(exclude_unset=True)
     reject_nulls(changes)
-    async with factory.begin() as db:
+
+    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
         scope = await _lock_event(db, event_id)
         event = scope.event
         ensure_can_manage(actor, event)
         ensure_not_cancelled(event)
         for k, v in changes.items():
             setattr(event, k, v)
+        await db.flush()
+        return management_outcome(EventView.of(event))
+
     # TODO(realtime): management.changed event_updated with empty sessions (10.5).
-    return EventView.of(event)
+    return await run_management(
+        factory,
+        actor_id=actor.id,
+        request_id=request_id,
+        operation="patch_event",
+        params={
+            "event_id": event_id,
+            "changes": body.model_dump(mode="json", exclude_unset=True),
+        },
+        execute=execute,
+    )
 
 
 async def publish_event(
-    factory: Factory, actor: Account, event_id: uuid.UUID
-) -> tuple[EventView, list[SessionChange]]:
+    factory: Factory, actor: Account, event_id: uuid.UUID, *, request_id: uuid.UUID
+) -> CommandOutcome:
     """Publish every valid draft session and, if still a draft, the event.
 
     A valid draft session is one whose registration close is later than the
     database time. Invalid drafts stay ``DRAFT``. A draft event without a
     valid session is ``409``; a published event with none is ``200`` unchanged.
     """
-    async with factory.begin() as db:
+
+    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
         scope = await _lock_event(db, event_id, all_sessions=True)
         event, now = scope.event, scope.now
         ensure_can_manage(actor, event)
@@ -243,21 +278,36 @@ async def publish_event(
         for s in valid:
             s.status = PS.PUBLISHED.value
             changes.append(await session_change(db, s, cause))
-    return EventView.of(event), changes
+        return management_outcome(EventView.of(event), changes=changes)
+
+    return await run_management(
+        factory,
+        actor_id=actor.id,
+        request_id=request_id,
+        operation="publish_event",
+        params={"event_id": event_id},
+        execute=execute,
+    )
 
 
 async def cancel_event(
-    factory: Factory, actor: Account, event_id: uuid.UUID, reason: str
-) -> tuple[EventView, list[SessionChange]]:
+    factory: Factory,
+    actor: Account,
+    event_id: uuid.UUID,
+    reason: str,
+    *,
+    request_id: uuid.UUID,
+) -> CommandOutcome:
     """One transaction: the event, every session, every active attempt, one
     audit row. Repeating it returns the cancelled event unchanged."""
     correlation_id = uuid.uuid7()
-    async with factory.begin() as db:
+
+    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
         scope = await _lock_event(db, event_id, all_sessions=True)
         event, now = scope.event, scope.now
         ensure_can_manage(actor, event)
         if event.status == PS.CANCELLED:
-            return EventView.of(event), []
+            return management_outcome(EventView.of(event))
 
         event.status, event.cancelled_at, event.cancellation_reason = (
             PS.CANCELLED.value,
@@ -297,7 +347,16 @@ async def cancel_event(
             correlation_id=correlation_id,
             target_event_id=event.id,
         )
-    return EventView.of(event), changes
+        return management_outcome(EventView.of(event), changes=changes)
+
+    return await run_management(
+        factory,
+        actor_id=actor.id,
+        request_id=request_id,
+        operation="cancel_event",
+        params={"event_id": event_id, "reason": reason},
+        execute=execute,
+    )
 
 
 # ---- Queries (no locks) ----

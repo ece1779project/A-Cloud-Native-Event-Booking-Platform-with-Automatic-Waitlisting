@@ -323,11 +323,15 @@ async def test_wrong_state_is_409_and_changes_nothing(
 
 
 async def _cancel_session(session_factory, settings, organizer, event, session, p):
-    await ssvc.cancel_session(session_factory, organizer, session.id, "Room flooded")
+    await ssvc.cancel_session(
+        session_factory, organizer, session.id, "Room flooded", request_id=uuid.uuid4()
+    )
 
 
 async def _cancel_event(session_factory, settings, organizer, event, session, p):
-    await esvc.cancel_event(session_factory, organizer, event.id, "Speaker ill")
+    await esvc.cancel_event(
+        session_factory, organizer, event.id, "Speaker ill", request_id=uuid.uuid4()
+    )
 
 
 async def _admin_cancel(session_factory, settings, organizer, event, session, p):
@@ -375,7 +379,9 @@ async def test_cancel_after_session_cancellation_is_409(session_factory, setting
         organizer, _, session = await make_scope(db, capacity=1)
         a = await make_account(db)
         hold = await make_held(db, session, a)
-    await ssvc.cancel_session(session_factory, organizer, session.id, "Room flooded")
+    await ssvc.cancel_session(
+        session_factory, organizer, session.id, "Room flooded", request_id=uuid.uuid4()
+    )
 
     outcome = await _run(psvc.cancel, session_factory, settings, a, hold)
 

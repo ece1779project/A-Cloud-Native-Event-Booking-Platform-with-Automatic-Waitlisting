@@ -167,14 +167,17 @@ async def idempotency_key(
         ) from exc
 
 
-def outcome_response(request: Request, outcome: CommandOutcome) -> JSONResponse:
+def outcome_response(
+    request: Request, outcome: CommandOutcome, *, with_result: bool = True
+) -> JSONResponse:
     """Render a command outcome, fresh or replayed, with its original status.
-    Success carries the result code in ``meta.result``; a stored rejection
-    uses the error envelope and is never retryable."""
+    Success carries the result code in ``meta.result`` (participation commands
+    only, 8.1; management commands pass ``with_result=False``); a stored
+    rejection uses the error envelope and is never retryable."""
     m = meta(
         request,
         session_version=outcome.session_version,
-        result=None if outcome.is_error else outcome.result_code,
+        result=outcome.result_code if with_result and not outcome.is_error else None,
     )
     if outcome.is_error:
         body = ErrorEnvelope(
@@ -189,6 +192,13 @@ def outcome_response(request: Request, outcome: CommandOutcome) -> JSONResponse:
     else:
         body = Envelope[dict](data=outcome.payload, meta=m)
     return JSONResponse(body.model_dump(mode="json"), status_code=outcome.http_status)
+
+
+async def management_response(request: Request, outcome: CommandOutcome):
+    """Publish a management command's changes, then render it without
+    ``meta.result``, which only participation commands carry (8.1)."""
+    await publish_after_commit(request, outcome.changes)
+    return outcome_response(request, outcome, with_result=False)
 
 
 async def publish_after_commit(request: Request, changes: list[SessionChange]) -> None:

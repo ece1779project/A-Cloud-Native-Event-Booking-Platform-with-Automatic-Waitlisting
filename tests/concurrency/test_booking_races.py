@@ -155,6 +155,7 @@ async def test_capacity_reduction_vs_booking(session_factory, settings):
                 organizer,
                 session.id,
                 SessionPatch(capacity=2),
+                request_id=uuid.uuid4(),
             )
             return "SHRUNK"
         except AppError as exc:  # CAPACITY_BELOW_OCCUPIED
