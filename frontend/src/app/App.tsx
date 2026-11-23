@@ -23,6 +23,7 @@ import {
   useRealtimeChannels,
 } from "../realtime/RealtimeProvider";
 import {DeadlineCountdown} from "../time/DeadlineCountdown";
+import {currentRegistrations} from "./registrations";
 
 const DISCONNECTED_POLL_MS = 10_000;
 
@@ -339,7 +340,7 @@ function MyRegistrations() {
   return (
     <>
       <h1>My registrations</h1>
-      {query.data.items.map((participation) => (
+      {currentRegistrations(query.data.items).map((participation) => (
         <article className="card" key={participation.id}>
           <h2>{participation.session.name}</h2>
           {participation.session.status === "CANCELLED" &&
