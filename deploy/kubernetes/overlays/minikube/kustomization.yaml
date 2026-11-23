@@ -5,11 +5,11 @@ resources:
   - ../../base
 
 images:
-  - name: seatflow-app
-    newName: seatflow-app
+  - name: ticketbooking-app
+    newName: ticketbooking-app
     newTag: dev
-  - name: seatflow-frontend
-    newName: seatflow-frontend
+  - name: ticketbooking-frontend
+    newName: ticketbooking-frontend
     newTag: dev
 
 patches:

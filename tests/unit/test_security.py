@@ -21,8 +21,8 @@ def _issue(keys, now, ttl=900):
         account_id=uuid.uuid4(),
         now=now,
         private_key=keys[0],
-        issuer="seatflow",
-        audience="seatflow-api",
+        issuer="ticketbooking",
+        audience="ticketbooking-api",
         ttl_seconds=ttl,
     )
 
@@ -31,8 +31,8 @@ def _decode(keys, token, **kw):
     return sec.decode_access_token(
         token,
         public_key=keys[1],
-        issuer=kw.get("iss", "seatflow"),
-        audience=kw.get("aud", "seatflow-api"),
+        issuer=kw.get("iss", "ticketbooking"),
+        audience=kw.get("aud", "ticketbooking-api"),
     )
 
 
@@ -55,7 +55,7 @@ def test_wrong_audience_rejected(jwt_keys):
 
 
 def test_alg_none_and_hs256_rejected(jwt_keys):
-    claims = {"sub": "x", "iss": "seatflow", "aud": "seatflow-api"}
+    claims = {"sub": "x", "iss": "ticketbooking", "aud": "ticketbooking-api"}
     forged_none = jwt.encode(claims, None, algorithm="none")
     with pytest.raises(jwt.InvalidTokenError):
         _decode(jwt_keys, forged_none)

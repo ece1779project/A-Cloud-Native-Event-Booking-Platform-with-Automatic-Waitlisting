@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1740" height="665" viewBox="0 0 1740 665" role="img" aria-labelledby="title desc">
-<title id="title">SeatFlow — Planned System Architecture</title>
+<title id="title">Ticketbooking — Planned System Architecture</title>
 <desc id="desc">Attendees, organizers and administrators use a web frontend over HTTPS and WSS. A load balancer and ingress route traffic to a FastAPI backend and WebSocket gateway in a DigitalOcean deployment using Kubernetes. FastAPI and background workers use PostgreSQL transactions for bookings, holds and first-come-first-served waitlisting. Background workers scan persisted deadlines and promote waiting attendees. API and workers publish changes to Redis only after committing database transactions. Redis provides Pub/Sub for WebSockets and rate-limit counters for the API.</desc>
 <defs>
   <marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 1 1 L 9 5 L 1 9 Z" fill="#376C9D"/></marker>

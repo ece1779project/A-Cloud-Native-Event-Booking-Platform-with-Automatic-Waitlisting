@@ -17,7 +17,7 @@ type RealtimeMessage = {
 const RECONCILE_INTERVAL_MS = 60_000;
 const MAX_RECONNECT_MS = 30_000;
 
-export class SeatflowRealtime {
+export class TicketbookingRealtime {
   private socket: WebSocket | null = null;
   private desiredChannels = new Set<string>();
   private activeChannels = new Set<string>();
@@ -75,8 +75,8 @@ export class SeatflowRealtime {
 
     this.grantedScopes = new Set(scopes);
     const socket = new WebSocket(this.websocketUrl(), [
-      "seatflow.v1",
-      `seatflow.ticket.${ticket}`,
+      "ticketbooking.v1",
+      `ticketbooking.ticket.${ticket}`,
     ]);
     this.socket = socket;
 
@@ -122,9 +122,11 @@ export class SeatflowRealtime {
       return;
     }
     if (message.type === "session.changed" && this.acceptVersion(message)) {
-      void this.queryClient.invalidateQueries({
-        queryKey: ["session", message.session_id],
-      });
+      if (message.event_id !== undefined) {
+        void this.queryClient.invalidateQueries({
+          queryKey: ["event", message.event_id],
+        });
+      }
       void this.queryClient.invalidateQueries({queryKey: ["events"]});
       void this.queryClient.invalidateQueries({
         queryKey: ["my-participation", message.session_id],

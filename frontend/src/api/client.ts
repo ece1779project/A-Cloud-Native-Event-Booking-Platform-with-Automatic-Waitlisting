@@ -40,3 +40,14 @@ export function onAccessTokenChange(listener: () => void): () => void {
   tokenListeners.add(listener);
   return () => tokenListeners.delete(listener);
 }
+
+const authRevokedListeners = new Set<() => void>();
+
+export function onAuthRevoked(listener: () => void): () => void {
+  authRevokedListeners.add(listener);
+  return () => authRevokedListeners.delete(listener);
+}
+
+export function notifyAuthRevoked(): void {
+  for (const listener of authRevokedListeners) listener();
+}

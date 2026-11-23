@@ -32,29 +32,29 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: api
-          image: seatflow-app:latest
+          image: ticketbooking-app:latest
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
               containerPort: 8000
           envFrom:
             - configMapRef:
-                name: seatflow-config
+                name: ticketbooking-config
           env:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: seatflow-secrets
+                  name: ticketbooking-secrets
                   key: database-url
             - name: JWT_PRIVATE_KEY
               valueFrom:
                 secretKeyRef:
-                  name: seatflow-secrets
+                  name: ticketbooking-secrets
                   key: jwt-private-key
             - name: JWT_PUBLIC_KEY
               valueFrom:
                 secretKeyRef:
-                  name: seatflow-secrets
+                  name: ticketbooking-secrets
                   key: jwt-public-key
           startupProbe:
             httpGet:

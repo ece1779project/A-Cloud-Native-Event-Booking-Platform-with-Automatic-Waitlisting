@@ -32,7 +32,7 @@ spec:
       terminationGracePeriodSeconds: 30
       containers:
         - name: websocket
-          image: seatflow-app:latest
+          image: ticketbooking-app:latest
           imagePullPolicy: IfNotPresent
           command:
             - /app/.venv/bin/uvicorn
@@ -50,12 +50,12 @@ spec:
               containerPort: 8000
           envFrom:
             - configMapRef:
-                name: seatflow-config
+                name: ticketbooking-config
           env:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: seatflow-secrets
+                  name: ticketbooking-secrets
                   key: database-url
           startupProbe:
             httpGet:

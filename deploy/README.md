@@ -5,8 +5,8 @@ Run it and wait for completion before applying API, WebSocket, and worker
 Deployments.
 
 The checked-in host name and registry in the DOKS overlay are placeholders.
-Replace `events.example.com`, `registry.digitalocean.com/seatflow/app`, and
-`registry.digitalocean.com/seatflow/frontend` before deployment.
+Replace `events.example.com`, `registry.digitalocean.com/ticketbooking/app`, and
+`registry.digitalocean.com/ticketbooking/frontend` before deployment.
 
 ## Required secrets
 
@@ -16,7 +16,7 @@ credentials because the password is embedded in connection URLs.
 ```sh
 kubectl apply -f deploy/kubernetes/base/namespace.yaml
 
-kubectl -n seatflow create secret generic seatflow-secrets \
+kubectl -n ticketbooking create secret generic ticketbooking-secrets \
   --from-literal=postgres-database="$POSTGRES_DB" \
   --from-literal=postgres-user="$POSTGRES_USER" \
   --from-literal=postgres-password="$POSTGRES_PASSWORD" \
@@ -44,38 +44,38 @@ Build the application image inside minikube:
 ```sh
 minikube start
 eval "$(minikube docker-env)"
-docker build -t seatflow-app:dev .
-docker build -f frontend/Dockerfile -t seatflow-frontend:dev .
+docker build -t ticketbooking-app:dev .
+docker build -f frontend/Dockerfile -t ticketbooking-frontend:dev .
 ```
 
 Start PostgreSQL and Redis before migration:
 
 ```sh
-kubectl apply -n seatflow -f deploy/kubernetes/base/configmap.yaml
-kubectl apply -n seatflow -f deploy/kubernetes/base/postgres.yaml
-kubectl apply -n seatflow -f deploy/kubernetes/base/redis.yaml
-kubectl -n seatflow rollout status statefulset/postgres --timeout=5m
-kubectl -n seatflow rollout status statefulset/redis --timeout=5m
+kubectl apply -n ticketbooking -f deploy/kubernetes/base/configmap.yaml
+kubectl apply -n ticketbooking -f deploy/kubernetes/base/postgres.yaml
+kubectl apply -n ticketbooking -f deploy/kubernetes/base/redis.yaml
+kubectl -n ticketbooking rollout status statefulset/postgres --timeout=5m
+kubectl -n ticketbooking rollout status statefulset/redis --timeout=5m
 ```
 
 Run and verify the migration:
 
 ```sh
-kubectl -n seatflow delete job seatflow-migrate --ignore-not-found
+kubectl -n ticketbooking delete job ticketbooking-migrate --ignore-not-found
 kubectl set image -f deploy/kubernetes/base/migration.yaml \
-  migrate=seatflow-app:dev --local -o yaml |
-  kubectl apply -n seatflow -f -
-kubectl -n seatflow wait --for=condition=complete job/seatflow-migrate --timeout=5m
-kubectl -n seatflow logs job/seatflow-migrate
+  migrate=ticketbooking-app:dev --local -o yaml |
+  kubectl apply -n ticketbooking -f -
+kubectl -n ticketbooking wait --for=condition=complete job/ticketbooking-migrate --timeout=5m
+kubectl -n ticketbooking logs job/ticketbooking-migrate
 ```
 
 Only then apply the workloads:
 
 ```sh
 kubectl apply -k deploy/kubernetes/overlays/minikube
-kubectl -n seatflow rollout status deployment/api --timeout=5m
-kubectl -n seatflow rollout status deployment/websocket --timeout=5m
-kubectl -n seatflow rollout status deployment/worker --timeout=5m
+kubectl -n ticketbooking rollout status deployment/api --timeout=5m
+kubectl -n ticketbooking rollout status deployment/websocket --timeout=5m
+kubectl -n ticketbooking rollout status deployment/worker --timeout=5m
 ```
 
 API, WebSocket, and frontend NodePorts are `30080`, `30081`, and `30082`.
@@ -86,7 +86,7 @@ Before applying:
 
 1. Push the application and frontend images to DigitalOcean Container Registry.
 2. Replace the image repository/tag and public host name in the DOKS overlay.
-3. Create `seatflow-tls` in the `seatflow` namespace, or configure the
+3. Create `ticketbooking-tls` in the `ticketbooking` namespace, or configure the
    approved certificate controller to create it.
 4. Confirm that the cluster provides the `cilium` GatewayClass and
    `do-block-storage` StorageClass.
@@ -96,16 +96,16 @@ using the immutable registry image:
 
 ```sh
 kubectl apply -f deploy/kubernetes/base/namespace.yaml
-kubectl apply -n seatflow -f deploy/kubernetes/base/configmap.yaml
-kubectl apply -n seatflow -f deploy/kubernetes/base/postgres.yaml
-kubectl apply -n seatflow -f deploy/kubernetes/base/redis.yaml
-kubectl -n seatflow rollout status statefulset/postgres --timeout=5m
-kubectl -n seatflow rollout status statefulset/redis --timeout=5m
-kubectl -n seatflow delete job seatflow-migrate --ignore-not-found
+kubectl apply -n ticketbooking -f deploy/kubernetes/base/configmap.yaml
+kubectl apply -n ticketbooking -f deploy/kubernetes/base/postgres.yaml
+kubectl apply -n ticketbooking -f deploy/kubernetes/base/redis.yaml
+kubectl -n ticketbooking rollout status statefulset/postgres --timeout=5m
+kubectl -n ticketbooking rollout status statefulset/redis --timeout=5m
+kubectl -n ticketbooking delete job ticketbooking-migrate --ignore-not-found
 kubectl set image -f deploy/kubernetes/base/migration.yaml \
   migrate="$APP_IMAGE" --local -o yaml |
-  kubectl apply -n seatflow -f -
-kubectl -n seatflow wait --for=condition=complete job/seatflow-migrate --timeout=5m
+  kubectl apply -n ticketbooking -f -
+kubectl -n ticketbooking wait --for=condition=complete job/ticketbooking-migrate --timeout=5m
 kubectl apply -k deploy/kubernetes/overlays/doks
 ```
 
@@ -115,10 +115,10 @@ budget has been recalculated.
 ## Validation
 
 ```sh
-kubectl -n seatflow get pods,svc,pvc
-kubectl -n seatflow get gateway,httproute,hpa,pdb,networkpolicy
-kubectl -n seatflow port-forward service/prometheus 9090:9090
-kubectl -n seatflow port-forward service/grafana 3000:3000
+kubectl -n ticketbooking get pods,svc,pvc
+kubectl -n ticketbooking get gateway,httproute,hpa,pdb,networkpolicy
+kubectl -n ticketbooking port-forward service/prometheus 9090:9090
+kubectl -n ticketbooking port-forward service/grafana 3000:3000
 ```
 
 Prometheus should show all five jobs as up: `api`, `websocket`, `worker`,

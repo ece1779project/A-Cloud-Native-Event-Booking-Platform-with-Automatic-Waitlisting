@@ -177,12 +177,12 @@
   ],
   "refresh": "15s",
   "schemaVersion": 41,
-  "tags": ["seatflow"],
+  "tags": ["ticketbooking"],
   "templating": {"list": []},
   "time": {"from": "now-1h", "to": "now"},
   "timepicker": {},
   "timezone": "browser",
-  "title": "Seatflow Overview",
-  "uid": "seatflow-overview",
+  "title": "Ticketbooking Overview",
+  "uid": "ticketbooking-overview",
   "version": 1
 }

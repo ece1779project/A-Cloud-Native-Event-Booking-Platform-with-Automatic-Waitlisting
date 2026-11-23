@@ -1,7 +1,7 @@
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: seatflow
+  name: ticketbooking
 spec:
   gatewayClassName: cilium
   listeners:
@@ -20,7 +20,7 @@ spec:
         mode: Terminate
         certificateRefs:
           - kind: Secret
-            name: seatflow-tls
+            name: ticketbooking-tls
       allowedRoutes:
         namespaces:
           from: Same
@@ -31,7 +31,7 @@ metadata:
   name: redirect-http
 spec:
   parentRefs:
-    - name: seatflow
+    - name: ticketbooking
       sectionName: http
   hostnames: [events.example.com]
   rules:
@@ -47,7 +47,7 @@ metadata:
   name: api
 spec:
   parentRefs:
-    - name: seatflow
+    - name: ticketbooking
       sectionName: https
   hostnames: [events.example.com]
   rules:
@@ -67,7 +67,7 @@ metadata:
   name: websocket
 spec:
   parentRefs:
-    - name: seatflow
+    - name: ticketbooking
       sectionName: https
   hostnames: [events.example.com]
   rules:
@@ -87,7 +87,7 @@ metadata:
   name: frontend
 spec:
   parentRefs:
-    - name: seatflow
+    - name: ticketbooking
       sectionName: https
   hostnames: [events.example.com]
   rules:

@@ -32,17 +32,17 @@ spec:
             - name: POSTGRES_DB
               valueFrom:
                 secretKeyRef:
-                  name: seatflow-secrets
+                  name: ticketbooking-secrets
                   key: postgres-database
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:
-                  name: seatflow-secrets
+                  name: ticketbooking-secrets
                   key: postgres-user
             - name: POSTGRES_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: seatflow-secrets
+                  name: ticketbooking-secrets
                   key: postgres-password
           ports:
             - name: postgres

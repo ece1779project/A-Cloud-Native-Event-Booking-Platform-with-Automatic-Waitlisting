@@ -8,17 +8,17 @@ resources:
   - network-policies.yaml
 
 images:
-  - name: seatflow-app
-    newName: registry.digitalocean.com/seatflow/app
+  - name: ticketbooking-app
+    newName: registry.digitalocean.com/ticketbooking/app
     newTag: latest
-  - name: seatflow-frontend
-    newName: registry.digitalocean.com/seatflow/frontend
+  - name: ticketbooking-frontend
+    newName: registry.digitalocean.com/ticketbooking/frontend
     newTag: latest
 
 patches:
   - target:
       kind: ConfigMap
-      name: seatflow-config
+      name: ticketbooking-config
     patch: |-
       - op: replace
         path: /data/ENVIRONMENT

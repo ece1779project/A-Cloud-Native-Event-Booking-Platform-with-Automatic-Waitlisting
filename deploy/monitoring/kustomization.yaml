@@ -17,9 +17,9 @@ configMapGenerator:
       - default.yml=grafana/provisioning/dashboards/default.yml
   - name: grafana-dashboard
     files:
-      - seatflow-overview.json=grafana/dashboards/seatflow-overview.json
+      - ticketbooking-overview.json=grafana/dashboards/ticketbooking-overview.json
 
 labels:
   - pairs:
-      app.kubernetes.io/part-of: seatflow
+      app.kubernetes.io/part-of: ticketbooking
       app.kubernetes.io/component: monitoring

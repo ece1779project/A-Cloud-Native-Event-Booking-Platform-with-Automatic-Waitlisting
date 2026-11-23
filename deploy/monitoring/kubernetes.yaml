@@ -30,7 +30,7 @@ spec:
             - name: DATA_SOURCE_NAME
               valueFrom:
                 secretKeyRef:
-                  name: seatflow-secrets
+                  name: ticketbooking-secrets
                   key: postgres-exporter-dsn
           ports:
             - name: metrics
@@ -204,12 +204,12 @@ spec:
             - name: GF_SECURITY_ADMIN_USER
               valueFrom:
                 secretKeyRef:
-                  name: seatflow-secrets
+                  name: ticketbooking-secrets
                   key: grafana-admin-user
             - name: GF_SECURITY_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
-                  name: seatflow-secrets
+                  name: ticketbooking-secrets
                   key: grafana-admin-password
             - name: GF_USERS_ALLOW_SIGN_UP
               value: "false"

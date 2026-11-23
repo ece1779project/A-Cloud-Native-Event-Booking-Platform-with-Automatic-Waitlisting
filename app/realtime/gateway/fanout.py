@@ -20,7 +20,18 @@ from app.realtime.gateway.connection import (
     ConnectionRegistry,
     account_is_enabled,
 )
-from app.schemas.realtime import SystemResyncRequired
+from app.schemas.realtime import SessionChangedReason, SystemResyncRequired
+
+# These reasons change which events appear in the public list. The new session
+# has no subscribers yet, so the list cannot hear them on its own channel.
+_CATALOG_REASONS = frozenset(
+    {
+        SessionChangedReason.SESSION_PUBLISHED,
+        SessionChangedReason.SESSION_CANCELLED,
+        SessionChangedReason.EVENT_CANCELLED,
+        SessionChangedReason.REGISTRATION_CLOSED,
+    }
+)
 
 
 async def run_fanout(
@@ -71,10 +82,10 @@ async def deliver(
 
     if kind == "session":
         connections = await registry.for_channel(f"session:{resource_id}")
+        if _reason(payload) in _CATALOG_REASONS:
+            connections = _with_every_connection(connections, await registry.all())
     elif kind == "management":
-        connections = await registry.for_channel(
-            f"event:{resource_id}:management"
-        )
+        connections = await registry.for_channel(f"event:{resource_id}:management")
     elif message_type == "auth.revoked":
         connections = await registry.for_account(resource_id)
     else:
@@ -128,8 +139,25 @@ async def _broadcast_resync(registry: ConnectionRegistry) -> None:
 
 
 def _message_type(payload: str) -> str:
+    return _string_field(payload, "type") or "unknown"
+
+
+def _reason(payload: str) -> str | None:
+    return _string_field(payload, "reason")
+
+
+def _string_field(payload: str, name: str) -> str | None:
     try:
-        value = json.loads(payload).get("type")
-    except (json.JSONDecodeError, AttributeError):
-        return "unknown"
-    return value if isinstance(value, str) else "unknown"
+        value = json.loads(payload).get(name)
+    except json.JSONDecodeError, AttributeError:
+        return None
+    return value if isinstance(value, str) else None
+
+
+def _with_every_connection(
+    subscribed: tuple[ClientConnection, ...], everyone: tuple[ClientConnection, ...]
+) -> tuple[ClientConnection, ...]:
+    seen = {connection.connection_id for connection in subscribed}
+    return subscribed + tuple(
+        connection for connection in everyone if connection.connection_id not in seen
+    )

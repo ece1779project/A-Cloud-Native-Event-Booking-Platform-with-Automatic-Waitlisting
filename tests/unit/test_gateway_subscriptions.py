@@ -1,6 +1,7 @@
 """Gateway channel parsing, ticket scopes, limits, and local indexes."""
 
 import asyncio
+import json
 import uuid
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -10,11 +11,13 @@ from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from app.core.redis_keys import session_channel
 from app.realtime.gateway.connection import (
     ClientConnection,
     ConnectionRegistry,
     handle_connection,
 )
+from app.realtime.gateway.fanout import deliver
 from app.realtime.gateway.subscriptions import (
     ChannelKind,
     ScopeViolation,
@@ -93,7 +96,10 @@ async def test_account_channel_requires_account_ticket_scope():
 
     with pytest.raises(ScopeViolation):
         await apply_request(
-            UnusedDatabase(), state, request, account_id=None  # type: ignore[arg-type]
+            UnusedDatabase(),
+            state,
+            request,
+            account_id=None,  # type: ignore[arg-type]
         )
     assert state.channels == set()
 
@@ -141,7 +147,10 @@ async def test_public_channel_limit_closes_before_database_work():
     )
     with pytest.raises(SubscriptionLimitExceeded):
         await apply_request(
-            UnusedDatabase(), state, request, account_id=None  # type: ignore[arg-type]
+            UnusedDatabase(),
+            state,
+            request,
+            account_id=None,  # type: ignore[arg-type]
         )
 
 
@@ -181,9 +190,7 @@ def test_anonymous_websocket_upgrade_and_scope_close():
         )
     ).ticket
     app = FastAPI()
-    app.state.settings = SimpleNamespace(
-        cors_allowed_origins="http://localhost:5173"
-    )
+    app.state.settings = SimpleNamespace(cors_allowed_origins="http://localhost:5173")
     app.state.redis = redis
     app.state.registry = ConnectionRegistry()
     app.state.session_factory = FakeSessionContext
@@ -192,13 +199,11 @@ def test_anonymous_websocket_upgrade_and_scope_close():
     async def endpoint(websocket: WebSocket):
         await handle_connection(websocket)
 
-    with (
-        TestClient(app).websocket_connect(
-            "/ws/v1",
-            subprotocols=("seatflow.v1", f"seatflow.ticket.{ticket}"),
-            headers={"origin": "http://localhost:5173"},
-        ) as socket
-    ):
+    with TestClient(app).websocket_connect(
+        "/ws/v1",
+        subprotocols=("ticketbooking.v1", f"ticketbooking.ticket.{ticket}"),
+        headers={"origin": "http://localhost:5173"},
+    ) as socket:
         ready = socket.receive_json()
         assert ready["type"] == "connection.ready"
         assert ready["account_id"] is None
@@ -212,3 +217,60 @@ def test_anonymous_websocket_upgrade_and_scope_close():
         with pytest.raises(WebSocketDisconnect) as closed:
             socket.receive_json()
         assert closed.value.code == 4403
+
+
+def _listener() -> ClientConnection:
+    return ClientConnection(
+        websocket=FakeWebSocket(),
+        grant=TicketGrant(
+            account_id=None,
+            access_expires_at=None,
+            scopes=(TicketScope.PUBLIC,),
+        ),
+    )
+
+
+def _session_changed(session_id: uuid.UUID, reason: str) -> str:
+    return json.dumps(
+        {
+            "type": "session.changed",
+            "event_id": str(uuid.uuid4()),
+            "session_id": str(session_id),
+            "version": 1,
+            "reason": reason,
+            "occurred_at": "2026-11-23T16:00:00Z",
+        }
+    )
+
+
+async def test_new_publication_reaches_connections_that_do_not_know_the_session():
+    registry = ConnectionRegistry()
+    browsing = _listener()
+    watching = _listener()
+    session_id = uuid.uuid4()
+    await registry.add(browsing)
+    await registry.add(watching)
+    watching.subscriptions.channels.add(f"session:{session_id}")
+    await registry.subscriptions_changed(watching, set())
+
+    payload = _session_changed(session_id, "session_published")
+    await deliver(registry, FakeSessionContext, session_channel(session_id), payload)
+
+    assert browsing.websocket.sent == [payload]
+    assert watching.websocket.sent == [payload]
+
+
+async def test_seat_change_stays_on_the_subscribed_session_channel():
+    registry = ConnectionRegistry()
+    browsing = _listener()
+    await registry.add(browsing)
+    session_id = uuid.uuid4()
+
+    await deliver(
+        registry,
+        FakeSessionContext,
+        session_channel(session_id),
+        _session_changed(session_id, "participation_changed"),
+    )
+
+    assert browsing.websocket.sent == []

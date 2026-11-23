@@ -38,7 +38,7 @@ conversation. It is a hand-off log rather than a replacement for
 ### Completed
 
 - Added `/ws/v1` upgrade handling with exact Origin validation and the
-  `seatflow.v1` plus `seatflow.ticket.*` subprotocol contract.
+  `ticketbooking.v1` plus `ticketbooking.ticket.*` subprotocol contract.
 - Added connection registration, `connection.ready`, subscription state,
   subscribe/unsubscribe acknowledgements, canonical channel parsing, ticket
   scope enforcement, and the 50-public-channel limit.

@@ -1,5 +1,5 @@
 groups:
-  - name: seatflow-correctness
+  - name: ticketbooking-correctness
     rules:
       - alert: CapacityViolation
         expr: capacity_violations > 0
@@ -17,7 +17,7 @@ groups:
         annotations:
           summary: Expiration work has been overdue for more than 30 seconds
 
-  - name: seatflow-worker-freshness
+  - name: ticketbooking-worker-freshness
     rules:
       - alert: WorkerScanStale
         expr: time() - worker_last_scan_timestamp_seconds > 30
@@ -63,7 +63,7 @@ groups:
         annotations:
           summary: Worker invariant scan freshness metric is missing
 
-  - name: seatflow-http
+  - name: ticketbooking-http
     rules:
       - alert: UnexpectedServerErrorRatio
         expr: |

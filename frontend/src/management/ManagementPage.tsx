@@ -205,7 +205,14 @@ function ManagedSession({session}: {session: SessionView}) {
   return (
     <article className="card managed-session">
       <h3>{session.name}</h3>
-      <p>Status: {session.status}</p>
+      {session.status === "CANCELLED" ? (
+        <p>
+          Session cancelled
+          {session.cancellation_reason ? `: ${session.cancellation_reason}` : ""}
+        </p>
+      ) : (
+        <p>Status: {session.status}</p>
+      )}
       <p>Capacity: {session.capacity}; occupied: {session.occupied_count}</p>
       <CapacityForm session={session} />
       {session.status !== "CANCELLED" && (

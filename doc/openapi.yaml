@@ -1,9 +1,9 @@
 openapi: 3.1.0
 info:
-  title: SeatFlow API
+  title: Ticketbooking API
   version: 0.2.0-draft
   description: |
-    Contract-first draft of the SeatFlow HTTP API, written from
+    Contract-first draft of the Ticketbooking HTTP API, written from
     TECHNICAL_DESIGN.md Section 8 and PRD.md before the routes exist.
 
     Once the FastAPI routes are implemented, the generated document
@@ -966,7 +966,7 @@ paths:
         - `management`: current `ORGANIZER` or `ADMIN`. Allows
           `event:{event_id}:management`; ownership is still checked per channel on subscribe.
 
-        The browser then offers `seatflow.v1` and `seatflow.ticket.<ticket>` in
+        The browser then offers `ticketbooking.v1` and `ticketbooking.ticket.<ticket>` in
         `Sec-WebSocket-Protocol`. Exempt from `Idempotency-Key`. Returns
         `503 SERVICE_UNAVAILABLE` while Redis is unavailable.
       security: [{}, { bearerAuth: [] }]

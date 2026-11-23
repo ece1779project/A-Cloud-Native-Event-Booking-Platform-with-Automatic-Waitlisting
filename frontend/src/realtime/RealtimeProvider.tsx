@@ -8,8 +8,8 @@ import {
   useState,
 } from "react";
 
-import {onAccessTokenChange, setAccessToken} from "../api/client";
-import {type RealtimeStatus, SeatflowRealtime} from "./SeatflowRealtime";
+import {notifyAuthRevoked, onAccessTokenChange} from "../api/client";
+import {type RealtimeStatus, TicketbookingRealtime} from "./TicketbookingRealtime";
 
 type RealtimeContextValue = {
   status: RealtimeStatus;
@@ -25,8 +25,8 @@ export function RealtimeProvider({
   const [status, setStatus] = useState<RealtimeStatus>("disconnected");
   const realtime = useMemo(
     () =>
-      new SeatflowRealtime(queryClient, setStatus, () => {
-        setAccessToken(null);
+      new TicketbookingRealtime(queryClient, setStatus, () => {
+        notifyAuthRevoked();
         void queryClient.invalidateQueries();
       }),
     [queryClient],

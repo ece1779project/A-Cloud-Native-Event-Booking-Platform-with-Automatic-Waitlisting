@@ -5,7 +5,7 @@ Design: TECHNICAL_DESIGN.md Section 10.5.
 
 import uuid
 
-PREFIX = "seatflow:v1:"
+PREFIX = "ticketbooking:v1:"
 
 
 def rate_limit_write(account_id: uuid.UUID, window: int) -> str:

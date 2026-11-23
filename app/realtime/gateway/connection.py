@@ -34,8 +34,8 @@ from app.schemas.realtime import (
     SubscriptionRequest,
 )
 
-APPLICATION_PROTOCOL = "seatflow.v1"
-TICKET_PROTOCOL_PREFIX = "seatflow.ticket."
+APPLICATION_PROTOCOL = "ticketbooking.v1"
+TICKET_PROTOCOL_PREFIX = "ticketbooking.ticket."
 
 
 @dataclass

@@ -47,20 +47,20 @@ def test_redis_names_match_the_design():
 
     assert (
         registration_write_rate_limit(account_id, 123)
-        == "seatflow:v1:rl:write:11111111-1111-4111-8111-111111111111:123"
+        == "ticketbooking:v1:rl:write:11111111-1111-4111-8111-111111111111:123"
     )
-    assert login_rate_limit("2001:db8::1", 123) == "seatflow:v1:rl:login:2001:db8::1:123"
-    assert websocket_ticket("abc123") == "seatflow:v1:ws:ticket:abc123"
+    assert login_rate_limit("2001:db8::1", 123) == "ticketbooking:v1:rl:login:2001:db8::1:123"
+    assert websocket_ticket("abc123") == "ticketbooking:v1:ws:ticket:abc123"
     assert (
         session_channel(session_id)
-        == "seatflow:v1:ps:session:22222222-2222-4222-8222-222222222222"
+        == "ticketbooking:v1:ps:session:22222222-2222-4222-8222-222222222222"
     )
     assert (
         account_channel(account_id)
-        == "seatflow:v1:ps:account:11111111-1111-4111-8111-111111111111"
+        == "ticketbooking:v1:ps:account:11111111-1111-4111-8111-111111111111"
     )
     assert (
         management_channel(event_id)
-        == "seatflow:v1:ps:event:33333333-3333-4333-8333-333333333333:management"
+        == "ticketbooking:v1:ps:event:33333333-3333-4333-8333-333333333333:management"
     )
-    assert pubsub_pattern() == "seatflow:v1:ps:*"
+    assert pubsub_pattern() == "ticketbooking:v1:ps:*"

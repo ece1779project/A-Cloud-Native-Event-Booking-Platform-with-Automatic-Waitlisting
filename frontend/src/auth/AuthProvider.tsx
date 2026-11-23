@@ -9,7 +9,7 @@ import {
   useState,
 } from "react";
 
-import {api, setAccessToken} from "../api/client";
+import {api, onAuthRevoked, setAccessToken} from "../api/client";
 import type {components} from "../api/schema";
 
 type Account = components["schemas"]["AccountView"];
@@ -66,6 +66,8 @@ export function AuthProvider({children}: PropsWithChildren) {
     void refresh();
     return clearSession;
   }, [clearSession, refresh]);
+
+  useEffect(() => onAuthRevoked(clearSession), [clearSession]);
 
   const login = useCallback(
     async (email: string, password: string) => {

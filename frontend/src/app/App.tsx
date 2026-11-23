@@ -32,7 +32,7 @@ export function App() {
   return (
     <div className="app-shell">
       <header>
-        <Link className="brand" to="/">Seatflow</Link>
+        <Link className="brand" to="/">Ticketbooking</Link>
         <nav aria-label="Primary navigation">
           <NavLink to="/">Events</NavLink>
           <NavLink to="/registrations">My registrations</NavLink>
@@ -225,13 +225,21 @@ function SessionCard({
     enabled: account !== null,
   });
   const current = participation.data;
+  const cancelled = session.status === "CANCELLED";
 
   return (
     <article className="card">
       <h3>{session.name}</h3>
       <p>{formatDate(session.starts_at)}</p>
-      <p>{session.available_count} seats available</p>
-      {account === null ? (
+      {cancelled ? (
+        <p>
+          Session cancelled
+          {session.cancellation_reason ? `: ${session.cancellation_reason}` : ""}
+        </p>
+      ) : (
+        <p>{session.available_count} seats available</p>
+      )}
+      {!cancelled && (account === null ? (
         <Link to="/login">Sign in to register</Link>
       ) : participation.isPending ? (
         <span>Checking registration…</span>
@@ -243,7 +251,7 @@ function SessionCard({
         )
       ) : (
         <ParticipationActions participation={current} />
-      )}
+      ))}
     </article>
   );
 }
@@ -257,15 +265,16 @@ function ParticipationActions({
   return (
     <div className="participation-actions">
       <p>Status: {participation.state}</p>
-      {participation.deadline_at !== null && (
-        <p>
-          Respond by {formatDate(participation.deadline_at)} —{" "}
-          <DeadlineCountdown
-            deadline={participation.deadline_at}
-            onExpired={() => void queryClient.invalidateQueries()}
-          />
-        </p>
-      )}
+      {(participation.state === "HELD" || participation.state === "OFFERED") &&
+        participation.deadline_at !== null && (
+          <p>
+            Respond by {formatDate(participation.deadline_at)} —{" "}
+            <DeadlineCountdown
+              deadline={participation.deadline_at}
+              onExpired={() => void queryClient.invalidateQueries()}
+            />
+          </p>
+        )}
       {participation.queue_position !== null && (
         <p>Currently number {participation.queue_position}; a seat is not guaranteed.</p>
       )}
@@ -333,6 +342,13 @@ function MyRegistrations() {
       {query.data.items.map((participation) => (
         <article className="card" key={participation.id}>
           <h2>{participation.session.name}</h2>
+          {participation.session.status === "CANCELLED" &&
+            participation.session.event_status !== "CANCELLED" && (
+              <p>Session cancelled</p>
+            )}
+          {participation.display_label != null && (
+            <p>{participation.display_label}</p>
+          )}
           {participation.historical ? (
             <p>Status: {participation.state}</p>
           ) : (

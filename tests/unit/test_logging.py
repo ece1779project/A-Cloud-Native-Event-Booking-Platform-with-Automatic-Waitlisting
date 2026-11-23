@@ -35,7 +35,7 @@ def test_message_redacts_bearer_and_websocket_ticket():
         __file__,
         1,
         (
-            "Bearer secret.jwt.value seatflow.ticket.raw-ticket "
+            "Bearer secret.jwt.value ticketbooking.ticket.raw-ticket "
             "password=secret Cookie: refresh_token=raw"
         ),
         (),

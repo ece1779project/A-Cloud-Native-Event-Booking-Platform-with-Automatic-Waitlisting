@@ -40,8 +40,8 @@ _SAFE_EXTRA_FIELDS = {
 _TEXT_REDACTIONS = (
     (re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]+"), "Bearer [REDACTED]"),
     (
-        re.compile(r"seatflow\.ticket\.[A-Za-z0-9_-]+"),
-        "seatflow.ticket.[REDACTED]",
+        re.compile(r"ticketbooking\.ticket\.[A-Za-z0-9_-]+"),
+        "ticketbooking.ticket.[REDACTED]",
     ),
     (
         re.compile(

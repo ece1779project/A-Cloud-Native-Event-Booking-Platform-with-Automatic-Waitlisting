@@ -651,7 +651,7 @@ export interface paths {
          *     - `management`: current `ORGANIZER` or `ADMIN`. Allows
          *       `event:{event_id}:management`; ownership is still checked per channel on subscribe.
          *
-         *     The browser then offers `seatflow.v1` and `seatflow.ticket.<ticket>` in
+         *     The browser then offers `ticketbooking.v1` and `ticketbooking.ticket.<ticket>` in
          *     `Sec-WebSocket-Protocol`. Exempt from `Idempotency-Key`. Returns
          *     `503 SERVICE_UNAVAILABLE` while Redis is unavailable.
          */

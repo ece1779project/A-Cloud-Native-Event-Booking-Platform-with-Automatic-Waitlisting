@@ -81,7 +81,7 @@ flowchart LR
     organizer[Organizer]
     administrator[Administrator]
     browser[ReactBrowserApp]
-    platform[SeatFlowPlatform]
+    platform[TicketbookingPlatform]
     doMonitoring[DigitalOceanMonitoring]
 
     attendee --> browser
@@ -741,7 +741,7 @@ Browsers cannot reliably add an `Authorization` header to a WebSocket upgrade. A
 - An authenticated request may obtain public, own-participation, and authorized management scopes.
 - The API creates a random, single-use ticket valid for 30 seconds.
 - Redis stores only a ticket digest with account ID when present, access-token expiry, and permitted scope.
-- The browser offers `seatflow.v1` and `seatflow.ticket.<base64url-ticket>` through `Sec-WebSocket-Protocol`; the gateway selects `seatflow.v1`.
+- The browser offers `ticketbooking.v1` and `ticketbooking.ticket.<base64url-ticket>` through `Sec-WebSocket-Protocol`; the gateway selects `ticketbooking.v1`.
 - The gateway validates the `Origin`, atomically consumes the ticket, and redacts the protocol header from logs.
 - Ticket issuance or connection fails when Redis is unavailable; the UI falls back to public or authenticated REST polling.
 
@@ -965,13 +965,13 @@ The API, the workers, and the gateway are separate processes that meet only thro
 
 **Keys**
 
-Every name starts with `seatflow:v1:`. A change that alters the meaning or format of a value uses a new version prefix, so old and new replicas never read each other's data during a rollout.
+Every name starts with `ticketbooking:v1:`. A change that alters the meaning or format of a value uses a new version prefix, so old and new replicas never read each other's data during a rollout.
 
 | Key | Redis type | Written by | Read by | Expiry | Value |
 | --- | --- | --- | --- | --- | --- |
-| `seatflow:v1:rl:write:{account_id}:{window}` | String counter | API | API | 120 seconds | Registration writes by that account in the window. |
-| `seatflow:v1:rl:login:{ip}:{window}` | String counter | API | API | 120 seconds | Login attempts from that normalized address in the window. |
-| `seatflow:v1:ws:ticket:{digest}` | String | API | WebSocket gateway | 30 seconds | JSON object: `account_id` (or `null`), `access_expires_at`, and `scopes`. |
+| `ticketbooking:v1:rl:write:{account_id}:{window}` | String counter | API | API | 120 seconds | Registration writes by that account in the window. |
+| `ticketbooking:v1:rl:login:{ip}:{window}` | String counter | API | API | 120 seconds | Login attempts from that normalized address in the window. |
+| `ticketbooking:v1:ws:ticket:{digest}` | String | API | WebSocket gateway | 30 seconds | JSON object: `account_id` (or `null`), `access_expires_at`, and `scopes`. |
 
 - `{window}` is the Unix time in seconds divided by 60 and rounded down. Rate limiting is a fixed one-minute window: the API increments the counter, sets the expiry when the counter is new, and rejects the request when the count exceeds the configured limit. `Retry-After` is the number of seconds left in the window. A fixed window can admit up to twice the limit across a window boundary; this is accepted because the limit protects capacity and is not a correctness rule. The in-process fallback used during Redis loss applies the same windows.
 - `{ip}` is the normalized address text from Section 9.5. Keys are built and never parsed, so the colons in an IPv6 address are harmless.
@@ -989,13 +989,13 @@ Every name starts with `seatflow:v1:`. A change that alters the meaning or forma
 
 | Redis channel | Published by | Message types | Delivered to WebSocket subscribers of |
 | --- | --- | --- | --- |
-| `seatflow:v1:ps:session:{session_id}` | API, workers | `session.changed` | `session:{session_id}` |
-| `seatflow:v1:ps:account:{account_id}` | API, workers | `participation.changed`, `auth.revoked` | `me:participations` on connections authenticated as that account. `auth.revoked` reaches all of that account's connections. |
-| `seatflow:v1:ps:event:{event_id}:management` | API, workers | `management.changed` | `event:{event_id}:management` |
+| `ticketbooking:v1:ps:session:{session_id}` | API, workers | `session.changed` | `session:{session_id}` |
+| `ticketbooking:v1:ps:account:{account_id}` | API, workers | `participation.changed`, `auth.revoked` | `me:participations` on connections authenticated as that account. `auth.revoked` reaches all of that account's connections. |
+| `ticketbooking:v1:ps:event:{event_id}:management` | API, workers | `management.changed` | `event:{event_id}:management` |
 
 - The published body is the UTF-8 JSON message from Section 10.1 with no additional envelope. The gateway forwards it unchanged after the delivery checks in Section 10.2.
 - The gateway routes by the Redis channel name and never by fields inside the body. The account that receives a private message is therefore fixed by the publisher's choice of channel.
-- Each gateway replica holds one pattern subscription to `seatflow:v1:ps:*` and filters in memory. This removes the race between a browser subscribing and the gateway subscribing in Redis. Per-channel subscriptions replace it only if load tests show the fan-out cost matters.
+- Each gateway replica holds one pattern subscription to `ticketbooking:v1:ps:*` and filters in memory. This removes the race between a browser subscribing and the gateway subscribing in Redis. Per-channel subscriptions replace it only if load tests show the fan-out cost matters.
 - `connection.ready`, `subscription.ack`, and `system.resync_required` originate in the gateway and are never published in Redis.
 
 **Publication matrix**
@@ -1198,7 +1198,7 @@ All processes read configuration from environment variables through `app/core/co
 | `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | API, gateway | Frontend origins allowed by CORS and by the WebSocket `Origin` check. |
 | `JWT_PRIVATE_KEY` | None; secret | API | Ed25519 key that signs access tokens. |
 | `JWT_PUBLIC_KEY` | None | API | Ed25519 key that verifies access tokens. |
-| `JWT_ISSUER`, `JWT_AUDIENCE` | `seatflow`, `seatflow-api` | API | Required `iss` and `aud` claim values. |
+| `JWT_ISSUER`, `JWT_AUDIENCE` | `ticketbooking`, `ticketbooking-api` | API | Required `iss` and `aud` claim values. |
 | `ACCESS_TOKEN_TTL_SECONDS` | `900` | API | Access-token lifetime (Section 9.1). |
 | `REFRESH_TOKEN_TTL_SECONDS` | `604800` | API | Absolute refresh-token lifetime (Section 9.1). |
 | `WORKER_SCAN_INTERVAL_SECONDS` | `1` | Workers | Delay between scans (Section 11). |

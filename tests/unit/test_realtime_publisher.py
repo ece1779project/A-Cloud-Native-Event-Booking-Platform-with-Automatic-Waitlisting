@@ -92,9 +92,9 @@ async def test_publish_changes_uses_contract_order_channels_and_reasons():
     )
 
     assert [channel for channel, _ in redis.calls] == [
-        f"seatflow:v1:ps:session:{session_id}",
-        f"seatflow:v1:ps:account:{account_id}",
-        f"seatflow:v1:ps:event:{event_id}:management",
+        f"ticketbooking:v1:ps:session:{session_id}",
+        f"ticketbooking:v1:ps:account:{account_id}",
+        f"ticketbooking:v1:ps:event:{event_id}:management",
     ]
     messages = [json.loads(payload) for _, payload in redis.calls]
     assert [message["type"] for message in messages] == [
