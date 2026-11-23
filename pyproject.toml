@@ -32,3 +32,8 @@ asyncio_default_test_loop_scope = "function"
 
 [tool.uv]
 package = false
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI declares dependencies as Depends(...) in argument defaults; it is the
+# framework's documented pattern, not a shared mutable default.
+extend-immutable-calls = ["fastapi.Depends", "fastapi.Security"]
