@@ -13,7 +13,9 @@ def _app() -> FastAPI:
 
     @app.get("/boom")
     async def boom():
-        raise AppError(ErrorCode.WAITLIST_REQUIRED, details={"available": 0}, session_version=7)
+        raise AppError(
+            ErrorCode.WAITLIST_REQUIRED, details={"available": 0}, session_version=7
+        )
 
     @app.get("/lock")
     async def lock():
@@ -55,5 +57,11 @@ def test_unknown_route_is_404_envelope():
 
 def test_safe_request_id_is_kept_and_unsafe_replaced():
     c = TestClient(_app())
-    assert c.get("/q?n=1", headers={"X-Request-ID": "abc-123"}).headers["X-Request-ID"] == "abc-123"
-    assert c.get("/q?n=1", headers={"X-Request-ID": "bad\nvalue"}).headers["X-Request-ID"] != "bad\nvalue"
+    assert (
+        c.get("/q?n=1", headers={"X-Request-ID": "abc-123"}).headers["X-Request-ID"]
+        == "abc-123"
+    )
+    assert (
+        c.get("/q?n=1", headers={"X-Request-ID": "bad\nvalue"}).headers["X-Request-ID"]
+        != "bad\nvalue"
+    )

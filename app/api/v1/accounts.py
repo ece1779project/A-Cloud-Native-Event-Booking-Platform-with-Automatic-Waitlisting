@@ -14,8 +14,14 @@ from app.services import accounts as accounts_service
 router = APIRouter(tags=["accounts"])
 
 
-@router.post("/accounts", status_code=status.HTTP_201_CREATED, response_model=Envelope[AccountView])
-async def create_account(request: Request, body: AccountCreate, factory=Depends(get_factory)):
+@router.post(
+    "/accounts",
+    status_code=status.HTTP_201_CREATED,
+    response_model=Envelope[AccountView],
+)
+async def create_account(
+    request: Request, body: AccountCreate, factory=Depends(get_factory)
+):
     account = await accounts_service.register(factory, body)
     return Envelope(data=AccountView.of(account), meta=meta(request))
 

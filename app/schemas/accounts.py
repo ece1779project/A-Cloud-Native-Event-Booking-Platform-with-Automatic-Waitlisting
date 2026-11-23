@@ -19,7 +19,9 @@ from pydantic import (
 
 from app.schemas.common import StrictModel
 
-Password = Annotated[str, StringConstraints(strip_whitespace=False, min_length=12, max_length=128)]
+Password = Annotated[
+    str, StringConstraints(strip_whitespace=False, min_length=12, max_length=128)
+]
 
 
 class AccountCreate(StrictModel):

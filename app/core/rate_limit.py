@@ -51,7 +51,9 @@ class RateLimiter:
         if count > limit:
             retry_after = max(1, math.ceil((window + 1) * WINDOW_SECONDS - now))
             log.info("rate limited", extra={"limit": limit, "degraded": self.degraded})
-            raise AppError(ErrorCode.RATE_LIMITED, headers={"Retry-After": str(retry_after)})
+            raise AppError(
+                ErrorCode.RATE_LIMITED, headers={"Retry-After": str(retry_after)}
+            )
 
     async def _incr_redis(self, redis: Redis | None, key: str) -> int | None:
         if redis is None:
@@ -62,7 +64,7 @@ class RateLimiter:
                 pipe.incr(key)
                 pipe.expire(key, KEY_TTL_SECONDS, nx=True)
                 count, _ = await pipe.execute()
-        except (RedisError, OSError):
+        except RedisError, OSError:
             self._set_degraded(True)
             return None
         self._set_degraded(False)

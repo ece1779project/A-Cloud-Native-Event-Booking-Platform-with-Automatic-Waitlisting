@@ -115,13 +115,18 @@ async def cancel(
     settings=Depends(get_settings_dep),
 ):
     outcome = await svc.cancel(
-        factory, settings, account=account, participation_id=participation_id, request_id=key
+        factory,
+        settings,
+        account=account,
+        participation_id=participation_id,
+        request_id=key,
     )
     return await _respond(request, outcome)
 
 
 @router.get(
-    "/sessions/{session_id}/my-participation", response_model=Envelope[ParticipationView]
+    "/sessions/{session_id}/my-participation",
+    response_model=Envelope[ParticipationView],
 )
 async def my_participation(
     request: Request,
@@ -146,7 +151,9 @@ async def my_participations(
     return Envelope(data=page, meta=meta(request))
 
 
-@router.get("/participations/{participation_id}", response_model=Envelope[ParticipationView])
+@router.get(
+    "/participations/{participation_id}", response_model=Envelope[ParticipationView]
+)
 async def get_participation(
     request: Request,
     participation_id: uuid.UUID,

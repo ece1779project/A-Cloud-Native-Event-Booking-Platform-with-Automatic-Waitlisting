@@ -24,18 +24,30 @@ REFRESH_PATH = "/api/v1/auth"
 def _set_cookies(response: Response, issued: IssuedLogin) -> None:
     max_age = max(0, int((issued.refresh_expires_at - issued.now).total_seconds()))
     response.set_cookie(
-        REFRESH_COOKIE, issued.refresh_token, max_age=max_age,
-        path=REFRESH_PATH, httponly=True, secure=True, samesite="lax",
+        REFRESH_COOKIE,
+        issued.refresh_token,
+        max_age=max_age,
+        path=REFRESH_PATH,
+        httponly=True,
+        secure=True,
+        samesite="lax",
     )
     if issued.csrf_token:
         response.set_cookie(
-            CSRF_COOKIE, issued.csrf_token, max_age=max_age,
-            path="/", httponly=False, secure=True, samesite="lax",
+            CSRF_COOKIE,
+            issued.csrf_token,
+            max_age=max_age,
+            path="/",
+            httponly=False,
+            secure=True,
+            samesite="lax",
         )
 
 
 def _clear_cookies(response: Response) -> None:
-    response.delete_cookie(REFRESH_COOKIE, path=REFRESH_PATH, secure=True, httponly=True, samesite="lax")
+    response.delete_cookie(
+        REFRESH_COOKIE, path=REFRESH_PATH, secure=True, httponly=True, samesite="lax"
+    )
     response.delete_cookie(CSRF_COOKIE, path="/", secure=True, samesite="lax")
 
 
@@ -96,7 +108,9 @@ async def logout(
     x_csrf_token: str | None = Header(default=None),
     factory=Depends(get_factory),
 ):
-    await auth_service.logout(factory, refresh_token=refresh_token, csrf_header=x_csrf_token)
+    await auth_service.logout(
+        factory, refresh_token=refresh_token, csrf_header=x_csrf_token
+    )
     response = Response(status_code=status.HTTP_204_NO_CONTENT)
     _clear_cookies(response)
     return response

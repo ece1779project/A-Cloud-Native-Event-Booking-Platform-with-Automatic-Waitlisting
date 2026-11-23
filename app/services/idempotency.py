@@ -84,7 +84,10 @@ async def find_receipt(
 ) -> RequestResult | None:
     return await db.scalar(
         select(RequestResult)
-        .where(RequestResult.account_id == account_id, RequestResult.request_id == request_id)
+        .where(
+            RequestResult.account_id == account_id,
+            RequestResult.request_id == request_id,
+        )
         .execution_options(populate_existing=True)
     )
 

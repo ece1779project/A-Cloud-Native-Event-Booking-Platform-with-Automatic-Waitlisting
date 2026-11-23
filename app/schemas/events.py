@@ -25,7 +25,9 @@ class EventPatch(StrictModel):
     description: str | None = Field(default=None, min_length=1, max_length=5000)
     location: str | None = Field(default=None, min_length=1, max_length=300)
 
-    model_config = StrictModel.model_config | {"json_schema_extra": {"minProperties": 1}}
+    model_config = StrictModel.model_config | {
+        "json_schema_extra": {"minProperties": 1}
+    }
 
     @model_validator(mode="after")
     def not_empty(self) -> Self:

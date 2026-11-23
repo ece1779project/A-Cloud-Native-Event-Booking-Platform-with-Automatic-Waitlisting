@@ -37,7 +37,9 @@ async def bootstrap(
     password_hash = hash_password(password)
     try:
         async with factory.begin() as db:
-            existing = await db.scalar(select(Account).where(func.lower(Account.email) == email))
+            existing = await db.scalar(
+                select(Account).where(func.lower(Account.email) == email)
+            )
             if existing is not None:
                 return False
             db.add(
@@ -59,7 +61,11 @@ async def main() -> int:
     settings = get_settings()
     email = (settings.bootstrap_admin_email or "").strip().lower()
     password = settings.bootstrap_admin_password
-    if not email or password is None or len(password.get_secret_value()) < MIN_PASSWORD_LENGTH:
+    if (
+        not email
+        or password is None
+        or len(password.get_secret_value()) < MIN_PASSWORD_LENGTH
+    ):
         print(
             "BOOTSTRAP_ADMIN_EMAIL and BOOTSTRAP_ADMIN_PASSWORD "
             f"(at least {MIN_PASSWORD_LENGTH} characters) are required",
@@ -70,11 +76,17 @@ async def main() -> int:
     engine = create_engine(settings)
     try:
         created = await bootstrap(
-            create_session_factory(engine), email=email, password=password.get_secret_value()
+            create_session_factory(engine),
+            email=email,
+            password=password.get_secret_value(),
         )
     finally:
         await engine.dispose()
-    print(f"created administrator {email}" if created else f"account {email} already exists; nothing to do")
+    print(
+        f"created administrator {email}"
+        if created
+        else f"account {email} already exists; nothing to do"
+    )
     return 0
 
 

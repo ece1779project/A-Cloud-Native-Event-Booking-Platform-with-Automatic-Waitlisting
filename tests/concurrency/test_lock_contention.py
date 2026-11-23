@@ -65,7 +65,9 @@ async def test_concurrent_holds_never_oversell(session_factory):
 
     async def try_hold(account_id):
         async with session_factory.begin() as db:
-            scope = await lock_session_scope(db, session.id, share_account_ids=[account_id])
+            scope = await lock_session_scope(
+                db, session.id, share_account_ids=[account_id]
+            )
             counts = await session_counts(db, session.id)
             if counts.occupied >= scope.session.capacity:
                 return False

@@ -154,7 +154,9 @@ def registration_block(event: Event, session: EventSession, now) -> ErrorCode | 
         return ErrorCode.SESSION_CANCELLED
     if event.status != PS.PUBLISHED or session.status != PS.PUBLISHED:
         raise AppError(ErrorCode.RESOURCE_NOT_FOUND)
-    match registration_status(session.registration_opens_at, session.registration_closes_at, now):
+    match registration_status(
+        session.registration_opens_at, session.registration_closes_at, now
+    ):
         case RegistrationStatus.NOT_OPEN:
             return ErrorCode.REGISTRATION_NOT_OPEN
         case RegistrationStatus.CLOSED:
@@ -202,7 +204,9 @@ async def _settle(
     """Apply what the worker would have: expiry, then closure for a waiter.
     An expired seat is offered to the queue in the same transaction."""
     transitions = await expire_if_overdue(db, scope, p, correlation_id=correlation_id)
-    transitions += await end_waiting_if_closed(db, scope, p, correlation_id=correlation_id)
+    transitions += await end_waiting_if_closed(
+        db, scope, p, correlation_id=correlation_id
+    )
     if p.state == S.EXPIRED and transitions:
         transitions += await _promote(db, scope, correlation_id, settings)
     return transitions
@@ -271,7 +275,9 @@ async def confirm(
     operation = "CONFIRM"
     # simulation_result is part of the hash: a retry after a failure needs a new key.
     phash = parameter_hash(
-        operation, participation_id=participation_id, simulation_result=simulation_result
+        operation,
+        participation_id=participation_id,
+        simulation_result=simulation_result,
     )
     cause = ChangeCause.CONFIRMATION
 
@@ -289,12 +295,16 @@ async def confirm(
             case S.CANCELLED | S.EXPIRED:
                 return await _reject(db, scope, p, terminal_code(p), cause, [])
             case S.WAITLISTED:
-                return await _reject(db, scope, p, ErrorCode.INVALID_STATE_TRANSITION, cause, [])
+                return await _reject(
+                    db, scope, p, ErrorCode.INVALID_STATE_TRANSITION, cause, []
+                )
 
         # HELD or OFFERED, still inside the deadline.
         if simulation_result == "failure":
             # Nothing changes: same state, same deadline, no version bump (FR-05.3).
-            return await view_outcome(db, scope, p, status=200, code="PAYMENT_SIMULATION_FAILED")
+            return await view_outcome(
+                db, scope, p, status=200, code="PAYMENT_SIMULATION_FAILED"
+            )
         await apply_transition(
             db,
             p,
@@ -308,7 +318,9 @@ async def confirm(
         change = await build_session_change(
             db, scope, cause, [ParticipationTransition.of(p)]
         )
-        return await view_outcome(db, scope, p, status=200, code="CONFIRMED", change=change)
+        return await view_outcome(
+            db, scope, p, status=200, code="CONFIRMED", change=change
+        )
 
     return await run_command(
         factory,
@@ -346,11 +358,15 @@ async def cancel(
             # Repeated cancel: unchanged result, the seat was released only once.
             return await view_outcome(db, scope, p, status=200, code="CANCELLED")
         if p.state == S.EXPIRED:
-            return await _reject(db, scope, p, ErrorCode.PARTICIPATION_EXPIRED, cause, [])
+            return await _reject(
+                db, scope, p, ErrorCode.PARTICIPATION_EXPIRED, cause, []
+            )
         if has_started(scope.session.starts_at, scope.now):
             return await _reject(db, scope, p, ErrorCode.SESSION_STARTED, cause, [])
         if p.state not in (S.HELD, S.CONFIRMED):
-            return await _reject(db, scope, p, ErrorCode.INVALID_STATE_TRANSITION, cause, [])
+            return await _reject(
+                db, scope, p, ErrorCode.INVALID_STATE_TRANSITION, cause, []
+            )
 
         await apply_transition(
             db,
@@ -364,7 +380,9 @@ async def cancel(
         transitions = [ParticipationTransition.of(p)]
         transitions += await _promote(db, scope, ctx.request_id, settings)
         change = await build_session_change(db, scope, cause, transitions)
-        return await view_outcome(db, scope, p, status=200, code="CANCELLED", change=change)
+        return await view_outcome(
+            db, scope, p, status=200, code="CANCELLED", change=change
+        )
 
     return await run_command(
         factory,
@@ -400,7 +418,9 @@ async def admin_cancel(
         if p.state == S.CANCELLED:
             return await view_outcome(db, scope, p, status=200, code="CANCELLED")
         if p.state == S.EXPIRED:
-            return await _reject(db, scope, p, ErrorCode.PARTICIPATION_EXPIRED, cause, [])
+            return await _reject(
+                db, scope, p, ErrorCode.PARTICIPATION_EXPIRED, cause, []
+            )
 
         freed_seat = S(p.state) in OCCUPYING_STATES
         await apply_transition(
@@ -425,7 +445,9 @@ async def admin_cancel(
             target_participation_id=p.id,
         )
         change = await build_session_change(db, scope, cause, transitions)
-        return await view_outcome(db, scope, p, status=200, code="CANCELLED", change=change)
+        return await view_outcome(
+            db, scope, p, status=200, code="CANCELLED", change=change
+        )
 
     return await run_command(
         factory,
@@ -455,7 +477,10 @@ async def my_participation(
         event = await db.get(Event, s.event_id)
         p = await db.scalar(
             select(Participation)
-            .where(Participation.session_id == session_id, Participation.account_id == account.id)
+            .where(
+                Participation.session_id == session_id,
+                Participation.account_id == account.id,
+            )
             .order_by(
                 case((Participation.state.in_(ACTIVE_STATES), 0), else_=1),
                 Participation.created_at.desc(),
@@ -500,7 +525,8 @@ async def my_participations(
             )
         ).all()
         items = [
-            await build_view(db, p, s, e, historical=_historical(p)) for p, s, e in rows[:limit]
+            await build_view(db, p, s, e, historical=_historical(p))
+            for p, s, e in rows[:limit]
         ]
     next_cursor = encode_cursor({"o": offset + limit}) if len(rows) > limit else None
     return Page(items=items, next_cursor=next_cursor)
