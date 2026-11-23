@@ -34,6 +34,16 @@ asyncio_default_test_loop_scope = "function"
 package = false
 
 [tool.ruff.lint.flake8-bugbear]
-# FastAPI declares dependencies as Depends(...) in argument defaults; it is the
-# framework's documented pattern, not a shared mutable default.
-extend-immutable-calls = ["fastapi.Depends", "fastapi.Security"]
+# FastAPI dependency markers are meant to be call defaults.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Security",
+    "fastapi.Query",
+    "fastapi.Header",
+    "fastapi.Path",
+    "fastapi.Body",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# The authorization matrix reads best as dict(anon=..., a1=...).
+"tests/**" = ["C408"]

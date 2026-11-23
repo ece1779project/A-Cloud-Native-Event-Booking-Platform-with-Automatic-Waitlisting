@@ -5,6 +5,9 @@ COMMANDS = [
     ("post", "/api/v1/sessions/{session_id}/waitlist"),
     ("post", "/api/v1/participations/{participation_id}/confirm"),
     ("post", "/api/v1/participations/{participation_id}/cancel"),
+    ("post", "/api/v1/participations/{participation_id}/decline"),
+    ("post", "/api/v1/participations/{participation_id}/leave"),
+    ("post", "/api/v1/admin/participations/{participation_id}/cancel"),
 ]
 
 

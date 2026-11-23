@@ -41,7 +41,7 @@ CASES = [
         "/api/v1/events",
         None,
         False,
-        {"anon": 200, "a1": 200, "a2": 200, "o1": 200, "o2": 200, "admin": 200},
+        dict(anon=200, a1=200, a2=200, o1=200, o2=200, admin=200),
     ),
     (
         "view draft",
@@ -49,7 +49,7 @@ CASES = [
         "/api/v1/events/{draft}",
         None,
         False,
-        {"anon": 404, "a1": 404, "a2": 404, "o1": 200, "o2": 404, "admin": 200},
+        dict(anon=404, a1=404, a2=404, o1=200, o2=404, admin=200),
     ),
     (
         "create event",
@@ -57,7 +57,7 @@ CASES = [
         "/api/v1/events",
         {"title": "t", "description": "d", "location": "l"},
         False,
-        {"anon": 401, "a1": 403, "a2": 403, "o1": 201, "o2": 201, "admin": 201},
+        dict(anon=401, a1=403, a2=403, o1=201, o2=201, admin=201),
     ),
     (
         "edit event",
@@ -65,7 +65,7 @@ CASES = [
         "/api/v1/events/{event}",
         {"location": "x"},
         False,
-        {"anon": 401, "a1": 403, "a2": 403, "o1": 200, "o2": 403, "admin": 200},
+        dict(anon=401, a1=403, a2=403, o1=200, o2=403, admin=200),
     ),
     (
         "roster",
@@ -73,7 +73,7 @@ CASES = [
         "/api/v1/sessions/{session}/roster",
         None,
         False,
-        {"anon": 401, "a1": 403, "a2": 403, "o1": 200, "o2": 403, "admin": 200},
+        dict(anon=401, a1=403, a2=403, o1=200, o2=403, admin=200),
     ),
     (
         "read participation",
@@ -81,7 +81,7 @@ CASES = [
         "/api/v1/participations/{participation}",
         None,
         False,
-        {"anon": 401, "a1": 200, "a2": 404, "o1": 404, "o2": 404, "admin": 404},
+        dict(anon=401, a1=200, a2=404, o1=404, o2=404, admin=404),
     ),
     (
         "confirm someone else's",
@@ -89,7 +89,24 @@ CASES = [
         "/api/v1/participations/{participation}/confirm",
         {"simulation_result": "failure"},
         True,
-        {"anon": 401, "a1": 200, "a2": 404, "o1": 404, "o2": 404, "admin": 404},
+        dict(anon=401, a1=200, a2=404, o1=404, o2=404, admin=404),
+    ),
+    # a1 owns the attempt, but it is HELD, so decline and leave are 409.
+    (
+        "decline someone else's",
+        "POST",
+        "/api/v1/participations/{participation}/decline",
+        None,
+        True,
+        dict(anon=401, a1=409, a2=404, o1=404, o2=404, admin=404),
+    ),
+    (
+        "leave someone else's",
+        "POST",
+        "/api/v1/participations/{participation}/leave",
+        None,
+        True,
+        dict(anon=401, a1=409, a2=404, o1=404, o2=404, admin=404),
     ),
     (
         "admin list accounts",
@@ -97,7 +114,7 @@ CASES = [
         "/api/v1/admin/accounts",
         None,
         False,
-        {"anon": 401, "a1": 403, "a2": 403, "o1": 403, "o2": 403, "admin": 200},
+        dict(anon=401, a1=403, a2=403, o1=403, o2=403, admin=200),
     ),
 ]
 

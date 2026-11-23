@@ -1,8 +1,10 @@
 # Technical Design Document: Cloud-Native Event Booking Platform
 
-Version: 1.4  
-Date: 2026-11-17  
+Version: 1.5  
+Date: 2026-11-22  
 Status: Proposed target design; implementation pending
+
+Changes in 1.5: decline and leave are implemented on the shared cancel path. A command on an ended attempt returns `200` unchanged only when its own end reason is recorded, and a command never turns into another (Sections 7.3 and 8.4). The promotion latency report and the in-process acceptance tests are added (Sections 2, 5, 5.1 and 15). Compose passes `.env` to the API and the worker (Section 13.1). Three accepted limitations are added (Section 18).
 
 Changes in 1.4: an enabled account is the only eligibility rule in this release, so `INELIGIBLE` is reserved and unused (Section 7.4).
 
@@ -24,7 +26,7 @@ Requirement identifiers such as FR-04 and NFR-01 refer to the PRD.
 
 The following work remains to be implemented:
 
-- Business transactions built on the database layer: booking, confirmation, cancellation, decline, leave, and idempotency receipts.
+- Business transactions built on the database layer: booking, confirmation, cancellation, and idempotency receipts.
 - Account registration, authentication, authorization, and administration.
 - Event, session, booking, confirmation, cancellation, or waitlist APIs.
 - Redis rate limiting or post-commit notifications.
@@ -35,6 +37,8 @@ The following work remains to be implemented:
 The package skeleton in Section 5 is in place: every module exists with a statement of its responsibility. The database layer is implemented and tested: settings, the engine, the SQLAlchemy models, both Alembic revisions, the lock entry point, the participation store, and the `/health/live` and `/health/ready` endpoints. Compose runs the migration before it starts the API.
 
 Promotion and expiration are implemented and tested: the steps in `services/promotion.py` and `services/expiration.py` (Sections 7.3 and 7.4), the `SessionChange` result in `schemas/realtime.py` (Section 10.3), the four worker scans with their loop, shutdown and metrics (Sections 11 and 14), and a `worker` service in Compose. Workers publish nothing until the publisher exists.
+
+Decline and leave are implemented and tested. They share one release command with attendee cancel (Section 7.3). `python -m app.cli.promotion_report` measures promotion latency offline from `participation_changes` (Section 14). `tests/concurrency/test_acceptance.py` runs the PRD capacity rounds and the other joint validation scenarios in process (Section 15); the HTTP load test waits for the deployment.
 
 The remaining sections describe planned behavior rather than completed or measured results.
 
@@ -252,7 +256,8 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │   │   └── invariant.py              # Scan 4
 │   └── cli/                          # One-off commands
 │       ├── bootstrap_admin.py
-│       └── export_openapi.py
+│       ├── export_openapi.py
+│       └── promotion_report.py       # Promotion latency from history (Section 14)
 ├── migrations/                       # Alembic environment and revisions
 ├── alembic.ini
 ├── frontend/                         # Created by the Vite scaffold in Phase 4
@@ -297,6 +302,7 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 | Workers | `python -m app.workers` | `app/workers/__main__.py` |
 | Administrator bootstrap | `python -m app.cli.bootstrap_admin` | `app/cli/bootstrap_admin.py` |
 | OpenAPI export for CI | `python -m app.cli.export_openapi` | `app/cli/export_openapi.py` |
+| Promotion latency report | `python -m app.cli.promotion_report [--since ISO-8601] [--session UUID]` | `app/cli/promotion_report.py` |
 
 ### 5.2 Layering rules
 
@@ -437,6 +443,13 @@ Every command on an existing participation (confirm, cancel, decline, leave, and
 2. `end_waiting_if_closed`: a `WAITLISTED` entry in a session whose registration has closed becomes `CANCELLED` with `REGISTRATION_CLOSED`.
 
 The command then validates against the resulting state, so an attendee acting late meets the same outcome the worker would have written.
+
+Attendee cancel, decline, and leave differ only in the states they accept (`HELD` or `CONFIRMED`, `OFFERED`, `WAITLISTED`), the end reason they write (`USER_CANCELLED`, `OFFER_DECLINED`, `WITHDRAWN`), and whether they free a seat (leave does not). One function in `services/participations.py` implements all three, so they share the check order and the two rules below.
+
+The check order: someone else's attempt returns `404` and stores nothing; a receipt that committed while the command waited is replayed; an expiry or closure written by the two steps above returns its `409` and commits; an ended attempt follows the repeat rule; a confirmed booking after the session start returns `409 SESSION_STARTED`; a state outside the command's own returns `409 INVALID_STATE_TRANSITION`; otherwise the attempt ends with the caller as actor, and a freed seat is offered in the same transaction. Every `409` stores a receipt.
+
+- Repeat rule: on an attempt that has already ended, a command returns `200` with the unchanged result only when its own end reason is recorded. Administrator cancel follows the same rule with `ADMIN_CANCELLED`. An attempt that ended any other way returns the `409` for that ending: `PARTICIPATION_EXPIRED`, `REGISTRATION_CLOSED`, `SESSION_CANCELLED`, `EVENT_CANCELLED`, or otherwise `INVALID_STATE_TRANSITION`.
+- No conversion: a command never turns into another. Leave on an `OFFERED` attempt, or decline on a `HELD` one, returns `409 INVALID_STATE_TRANSITION` and changes nothing. The client refetches and shows the right action.
 
 The worker follows the same lock path. A stale expiry candidate becomes a no-op. The session lock ensures that confirmation and expiration cannot both win.
 
@@ -621,7 +634,7 @@ The confirmation body contains only `simulation_result: "success" | "failure"`. 
 Command outcomes are fixed as follows:
 
 - A new hold or waitlist entry returns `201`.
-- An existing active participation or repeated terminal command returns `200` with the unchanged current result.
+- An existing active participation or a repeated terminal command returns `200` with the unchanged current result. A terminal command is repeated only when its own end reason is already recorded (Section 7.3).
 - Successful confirmation, cancellation, decline, or leave returns `200`.
 - Simulated payment failure returns `200 PAYMENT_SIMULATION_FAILED` and preserves the state and deadline.
 - `WAITLIST_REQUIRED` and `DIRECT_BOOKING_AVAILABLE` return `409` with current availability and version; they do not consume capacity or create participation.
@@ -1034,13 +1047,13 @@ Scans run every second by default:
 3. Open sessions that have both free capacity and waiters.
 4. The capacity-invariant query used for alerting.
 
-Candidate selection does not grant authority to mutate. For each candidate, the worker starts a new transaction, invokes the common lock entry point, reloads state, reads database time, and either applies one valid transition or does nothing. Expiration and closure transactions promote eligible waiters when registration remains open.
+Each scan selects candidates in a short read transaction. For each candidate session, the worker opens a write transaction, locks the session scope and rechecks state against database time. All transitions in the transaction share one correlation ID and have a null actor. A changed session gets one version bump and one `SessionChange`. A stale candidate leaves the version unchanged. Workers rely on these state checks for idempotency and write no command receipt.
 
-The expiry scan groups candidates by session. One transaction takes the session lock, reads database time once, and expires every overdue `HELD` and `OFFERED` attempt of that session, then promotes, so the session version advances once and one `SessionChange` describes all of them. Worker transitions record a null `actor_id`.
+The expiry scan processes the oldest deadlines first. Under the session lock, it expires all due `HELD` and `OFFERED` rows. If any expired, it runs FIFO promotion in the same transaction. Promotion rechecks registration using fresh database time after each queue-head account lock.
 
-At registration close, the worker changes outstanding `HELD` and `OFFERED` rows to `EXPIRED` with their corresponding expiration reason, changes `WAITLISTED` rows to `CANCELLED` with `REGISTRATION_CLOSED`, and leaves `CONFIRMED` rows unchanged. It issues no new offers at or after close. Each transition retains history and increments the session version.
+At registration close, due holds and offers expire with their respective reasons, waiters are cancelled with `REGISTRATION_CLOSED`, and confirmed rows retain their seats. Closure issues no offers.
 
-Multiple workers may scan concurrently. Batches may distribute independent sessions with `SKIP LOCKED`, but promotion inside one session always reads the true lowest eligible `queue_seq`.
+Concurrent workers serialize on the session lock. The implementation selects candidates without `SKIP LOCKED`. If metrics show contention, independent sessions may be distributed across workers while preserving FIFO order within each session.
 
 On shutdown, workers stop taking candidates and finish or roll back active transactions within the Kubernetes termination grace period. On restart, all work is rediscovered from PostgreSQL; no in-process timer or Redis message is required.
 
@@ -1106,7 +1119,7 @@ The complete target Compose stack contains:
 - `postgres-exporter`
 - `redis-exporter`
 
-The migration command runs explicitly before application startup. Compose health checks distinguish liveness from dependency readiness. `.env.example` lists every variable in Section 13.5 without real credentials.
+The migration command runs explicitly before application startup. Compose health checks distinguish liveness from dependency readiness. `.env.example` lists every variable in Section 13.5 without real credentials. Compose passes a local `.env` to the API and the worker, so demo values such as a short `OFFER_VALIDITY_SECONDS` reach both processes that create offers; the `DATABASE_URL` that Compose assembles still takes precedence.
 
 ### 13.2 Kubernetes
 
@@ -1227,6 +1240,8 @@ Labels use bounded values such as service, operation, outcome, and error code. A
 
 `worker_last_scan_timestamp_seconds` is a gauge, one series per scan loop. Its label `scan` is `expiry`, `closure`, `promotion`, or `invariant`. The value is the Unix time of the last pass that finished without a dependency failure. `worker_oldest_overdue_seconds` measures due rows that are still waiting. It does not say whether the loop is still running.
 
+For `waitlist_promotion_latency_seconds` with cause `expiration`, pair new offers in queue order with expired deadlines in ascending order. Record each offer's allocation time minus its paired deadline after commit. For cancellation-driven promotions, derive report latency from the release and offer history rows in `participation_changes` that share a correlation ID.
+
 Grafana dashboards cover:
 
 - API traffic, latency, unexpected errors, and business outcomes.
@@ -1256,6 +1271,17 @@ Testing focuses on the risks that define the project:
 - Frontend and WebSocket tests cover reconnects, missing or out-of-order messages, polling fallback, and stale-version rejection.
 - Deployment tests verify migrations, persistent restarts, Redis/PostgreSQL outages, and Kubernetes rollouts.
 - Load tests measure correctness, latency, worker backlog, database connections, and HPA behavior under the PRD's acceptance workload.
+
+Participation factories seed the history needed for the next transition. When a test mixes factory-created waiters with a service-level join, set the session's `last_queue_seq` to the highest seeded queue number first. `make_waiting` leaves that counter unchanged.
+
+Run the PostgreSQL-backed suite locally with:
+
+```bash
+docker run -d --rm --name booking-test-db -p 55432:5432 -e POSTGRES_USER=test -e POSTGRES_PASSWORD=test -e POSTGRES_DB=booking_test postgres:18
+TEST_DATABASE_URL=postgresql+asyncpg://test:test@127.0.0.1:55432/booking_test uv run pytest
+```
+
+The suite runs after a clean `uv sync` on Python 3.14, pinned in `.python-version`, with no local alias or shim. Tests build `Settings` without `.env`, so local demo values never change them. `ACCEPTANCE_ROUNDS` sets the number of PRD capacity rounds in `tests/concurrency/test_acceptance.py`: 1 by default, 10 for a recorded evidence run.
 
 Detailed scenarios and target values remain defined in PRD Section 2 and the acceptance cases in `DATABASE_DESIGN.md`. Test reports record the environment and mark each result as passed, failed, or not executed.
 
@@ -1338,5 +1364,8 @@ Accepted first-release limitations:
 - Account disablement does not automatically cancel a confirmed booking.
 - Linear throughput improvement from additional API replicas is not promised.
 - Redis inventory pre-deduction remains an optional, isolated experiment and is not part of the baseline booking path.
+- A capacity increase does not expire overdue attempts first, so it may offer fewer seats than are about to be freed. The expiry scan closes the gap within about a second.
+- Promotions inside attendee and administrator commands record no live latency metric. `python -m app.cli.promotion_report` measures them offline from history.
+- Decline and leave keep the `SESSION_STARTED` check although valid data cannot reach it: by the start, every hold and offer has expired and every waiter has been closed.
 
 Any change to capacity guarantees, FIFO fairness, persistence semantics, real payment scope, or the authoritative role of PostgreSQL requires a PRD update and a reviewed design revision.

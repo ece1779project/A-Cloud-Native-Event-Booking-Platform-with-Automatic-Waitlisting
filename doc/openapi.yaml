@@ -702,7 +702,19 @@ paths:
       tags: [Participations]
       operationId: cancelParticipation
       summary: Attendee cancels a HELD or CONFIRMED seat
-      description: The released seat is offered to the next waiter in the same transaction. No free-text reason.
+      description: |
+        Ends a `HELD` or `CONFIRMED` attempt with `USER_CANCELLED`. The released seat is
+        offered to the next waiter in the same transaction. No free-text reason.
+        - Repeat rule: `200` with the unchanged attempt only when a cancel already ended it.
+          An attempt that ended any other way returns the `409` for that ending.
+        - The command never turns into another: an `OFFERED` or `WAITLISTED` attempt
+          returns `409 INVALID_STATE_TRANSITION` and nothing changes.
+        - `409` codes: `PARTICIPATION_EXPIRED`, `REGISTRATION_CLOSED`, `SESSION_CANCELLED`,
+          `EVENT_CANCELLED`, `SESSION_STARTED` (a confirmed booking after the start),
+          `INVALID_STATE_TRANSITION`.
+        - When the worker has not yet written the expiry or closure, `PARTICIPATION_EXPIRED`
+          and `REGISTRATION_CLOSED` commit it first; an expired seat is offered to the next
+          waiter in the same transaction.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -732,7 +744,18 @@ paths:
       tags: [Participations]
       operationId: declineOffer
       summary: Decline an OFFERED seat
-      description: Ends with `OFFER_DECLINED`; the seat goes to the next waiter.
+      description: |
+        Ends an `OFFERED` attempt with `OFFER_DECLINED`; the seat goes to the next waiter
+        in the same transaction. The attendee may join the waitlist again at the tail.
+        - Repeat rule: `200` with the unchanged attempt only when a decline already ended it.
+          An attempt that ended any other way returns the `409` for that ending.
+        - The command never turns into another: a `HELD`, `CONFIRMED` or `WAITLISTED`
+          attempt returns `409 INVALID_STATE_TRANSITION` and nothing changes.
+        - `409` codes: `PARTICIPATION_EXPIRED`, `REGISTRATION_CLOSED`, `SESSION_CANCELLED`,
+          `EVENT_CANCELLED`, `SESSION_STARTED`, `INVALID_STATE_TRANSITION`.
+        - When the worker has not yet written the expiry or closure, `PARTICIPATION_EXPIRED`
+          and `REGISTRATION_CLOSED` commit it first; an expired seat is offered to the next
+          waiter in the same transaction.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -762,7 +785,18 @@ paths:
       tags: [Participations]
       operationId: leaveWaitlist
       summary: Leave the waitlist
-      description: Ends a `WAITLISTED` attempt with `WITHDRAWN`. No seat is released.
+      description: |
+        Ends a `WAITLISTED` attempt with `WITHDRAWN`. No seat is released, so nobody is
+        promoted. A new join takes a new queue number at the tail.
+        - Repeat rule: `200` with the unchanged attempt only when a leave already ended it.
+          An attempt that ended any other way returns the `409` for that ending.
+        - The command never turns into another: an attempt promoted meanwhile (`OFFERED`)
+          keeps its offer and returns `409 INVALID_STATE_TRANSITION`; use decline.
+        - `409` codes: `PARTICIPATION_EXPIRED`, `REGISTRATION_CLOSED`, `SESSION_CANCELLED`,
+          `EVENT_CANCELLED`, `SESSION_STARTED`, `INVALID_STATE_TRANSITION`.
+        - When the worker has not yet written the expiry or closure, `PARTICIPATION_EXPIRED`
+          and `REGISTRATION_CLOSED` commit it first; an expired seat is offered to the next
+          waiter in the same transaction.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
@@ -888,7 +922,16 @@ paths:
       tags: [Admin]
       operationId: adminCancelParticipation
       summary: Administrator cancels any active participation
-      description: Ends with `ADMIN_CANCELLED`, records a management action, and promotes waiters if a seat is released.
+      description: |
+        Ends any active attempt with `ADMIN_CANCELLED`, records a management action, and
+        promotes waiters if a seat is released. There is no start-time check.
+        - Repeat rule: `200` with the unchanged attempt only when an administrator cancel
+          already ended it. An attempt that ended any other way returns the `409` for that ending.
+        - `409` codes: `PARTICIPATION_EXPIRED`, `REGISTRATION_CLOSED`, `SESSION_CANCELLED`,
+          `EVENT_CANCELLED`, `INVALID_STATE_TRANSITION`.
+        - When the worker has not yet written the expiry or closure, `PARTICIPATION_EXPIRED`
+          and `REGISTRATION_CLOSED` commit it first; an expired seat is offered to the next
+          waiter in the same transaction.
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
