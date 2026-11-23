@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -84,7 +85,10 @@ async def find_receipt(
 ) -> RequestResult | None:
     return await db.scalar(
         select(RequestResult)
-        .where(RequestResult.account_id == account_id, RequestResult.request_id == request_id)
+        .where(
+            RequestResult.account_id == account_id,
+            RequestResult.request_id == request_id,
+        )
         .execution_options(populate_existing=True)
     )
 
@@ -193,3 +197,47 @@ async def run_command(
         if r is None:
             raise  # some other unique violation: a bug, so a 500
         return replay(r, operation, phash)
+
+
+# ---- Management commands ----
+#
+# Event, session and administrator commands also take an Idempotency-Key (7.5).
+# Their rejections raise ``AppError``, so they roll back and leave the key
+# unused; only a success is stored and replayed.
+
+
+def management_outcome(
+    view: BaseModel,
+    *,
+    http_status: int = 200,
+    session_version: int | None = None,
+    changes: list[SessionChange] | None = None,
+) -> CommandOutcome:
+    """A successful management command: the response view as the payload."""
+    return CommandOutcome(
+        http_status=http_status,
+        result_code="OK",
+        payload=view.model_dump(mode="json"),
+        session_version=session_version,
+        changes=changes or [],
+    )
+
+
+async def run_management(
+    factory: async_sessionmaker[AsyncSession],
+    *,
+    actor_id: uuid.UUID,
+    request_id: uuid.UUID,
+    operation: str,
+    params: dict[str, Any],
+    execute: Execute,
+) -> CommandOutcome:
+    """``run_command`` with the hash taken over ``operation`` and ``params``."""
+    return await run_command(
+        factory,
+        account_id=actor_id,
+        request_id=request_id,
+        operation=operation,
+        phash=parameter_hash(operation, **params),
+        execute=execute,
+    )

@@ -88,7 +88,9 @@ def sqlstate(exc: BaseException) -> str | None:
     """Extract the PostgreSQL SQLSTATE from a SQLAlchemy/asyncpg exception."""
     orig = getattr(exc, "orig", exc)
     for candidate in (orig, getattr(orig, "__cause__", None)):
-        code = getattr(candidate, "sqlstate", None) or getattr(candidate, "pgcode", None)
+        code = getattr(candidate, "sqlstate", None) or getattr(
+            candidate, "pgcode", None
+        )
         if code:
             return code
     return None

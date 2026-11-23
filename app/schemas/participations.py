@@ -44,11 +44,15 @@ class ParticipationView(BaseModel):
     queue_position: int | None  # one-based, only while WAITLISTED
     created_at: datetime
     allocated_at: datetime | None
-    deadline_at: datetime | None  # absolute, so the client's countdown needs no server clock
+    deadline_at: (
+        datetime | None
+    )  # absolute, so the client's countdown needs no server clock
     confirmed_at: datetime | None
     ended_at: datetime | None
     end_reason: str | None
-    display_label: str | None = None  # "Event cancelled" when the parent event is cancelled
+    display_label: str | None = (
+        None  # "Event cancelled" when the parent event is cancelled
+    )
     historical: bool = False
     session: SessionSummary
     version: int  # current session version

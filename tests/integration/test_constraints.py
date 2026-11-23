@@ -118,7 +118,9 @@ async def test_session_time_order(session_factory):
         await db.execute(
             update(EventSession)
             .where(EventSession.id == session.id)
-            .values(registration_closes_at=EventSession.starts_at + timedelta(minutes=1))
+            .values(
+                registration_closes_at=EventSession.starts_at + timedelta(minutes=1)
+            )
         )
 
     await _expect_sqlstate(session_factory, CHECK_VIOLATION, bad)
@@ -233,9 +235,13 @@ async def test_trigger_transitions_match_domain(session_factory):
     Read the trigger as deployed and fail when the two differ."""
     async with session_factory.begin() as db:
         source = await db.scalar(
-            text("SELECT prosrc FROM pg_proc WHERE proname = 'guard_participation_update'")
+            text(
+                "SELECT prosrc FROM pg_proc WHERE proname = 'guard_participation_update'"
+            )
         )
-    allowed_list = source.split("(OLD.state, NEW.state) NOT IN", 1)[1].split("THEN", 1)[0]
+    allowed_list = source.split("(OLD.state, NEW.state) NOT IN", 1)[1].split("THEN", 1)[
+        0
+    ]
     in_trigger = set(re.findall(r"\('(\w+)', '(\w+)'\)", allowed_list))
 
     assert in_trigger == {(src.value, dst.value) for src, dst in ALLOWED_TRANSITIONS}
@@ -247,7 +253,8 @@ async def test_schedule_freezes_after_any_participation(session_factory):
         attendee = await make_account(db)
 
     shift = {
-        "registration_opens_at": EventSession.registration_opens_at - timedelta(minutes=5)
+        "registration_opens_at": EventSession.registration_opens_at
+        - timedelta(minutes=5)
     }
     # No participation yet: schedule edits are allowed.
     async with session_factory.begin() as db:
@@ -260,7 +267,11 @@ async def test_schedule_freezes_after_any_participation(session_factory):
         await db.execute(
             update(Participation)
             .where(Participation.id == p.id)
-            .values(state="CANCELLED", ended_at=datetime.now(UTC), end_reason="USER_CANCELLED")
+            .values(
+                state="CANCELLED",
+                ended_at=datetime.now(UTC),
+                end_reason="USER_CANCELLED",
+            )
         )
 
     # A terminal attempt still freezes the schedule ...

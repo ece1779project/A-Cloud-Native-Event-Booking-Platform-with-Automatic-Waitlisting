@@ -29,6 +29,7 @@ from app.core.rate_limit import RateLimiter
 from app.core.security import decode_access_token
 from app.domain.enums import Role
 from app.models.account import Account
+from app.realtime.publisher import publish_changes
 from app.schemas.common import Envelope, ErrorBody, ErrorEnvelope, Meta
 from app.schemas.realtime import SessionChange
 from app.services.idempotency import CommandOutcome
@@ -55,7 +56,9 @@ async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
-def meta(request: Request, session_version: int | None = None, result: str | None = None) -> Meta:
+def meta(
+    request: Request, session_version: int | None = None, result: str | None = None
+) -> Meta:
     return Meta(
         request_id=request_id_of(request),
         server_time=datetime.now(UTC),
@@ -64,11 +67,7 @@ def meta(request: Request, session_version: int | None = None, result: str | Non
     )
 
 
-
-
-async def _access_context_from_token(
-    request: Request, token: str
-) -> AccessContext:
+async def _access_context_from_token(request: Request, token: str) -> AccessContext:
     settings: Settings = request.app.state.settings
     _, public_key = settings.require_jwt_keys()
     try:
@@ -140,8 +139,6 @@ require_manager = require_roles(Role.ORGANIZER, Role.ADMIN)
 require_admin = require_roles(Role.ADMIN)
 
 
-
-
 def _limiter(request: Request) -> RateLimiter:
     return request.app.state.rate_limiter
 
@@ -192,14 +189,17 @@ async def idempotency_key(
         ) from exc
 
 
-def outcome_response(request: Request, outcome: CommandOutcome) -> JSONResponse:
+def outcome_response(
+    request: Request, outcome: CommandOutcome, *, with_result: bool = True
+) -> JSONResponse:
     """Render a command outcome, fresh or replayed, with its original status.
-    Success carries the result code in ``meta.result``; a stored rejection
-    uses the error envelope and is never retryable."""
+    Success carries the result code in ``meta.result`` (participation commands
+    only, 8.1; management commands pass ``with_result=False``); a stored
+    rejection uses the error envelope and is never retryable."""
     m = meta(
         request,
         session_version=outcome.session_version,
-        result=None if outcome.is_error else outcome.result_code,
+        result=outcome.result_code if with_result and not outcome.is_error else None,
     )
     if outcome.is_error:
         body = ErrorEnvelope(
@@ -216,6 +216,13 @@ def outcome_response(request: Request, outcome: CommandOutcome) -> JSONResponse:
     return JSONResponse(body.model_dump(mode="json"), status_code=outcome.http_status)
 
 
+async def management_response(request: Request, outcome: CommandOutcome):
+    """Publish a management command's changes, then render it without
+    ``meta.result``, which only participation commands carry (8.1)."""
+    await publish_after_commit(request, outcome.changes)
+    return outcome_response(request, outcome, with_result=False)
+
+
 async def publish_after_commit(request: Request, changes: list[SessionChange]) -> None:
     """Hand one commit's ``SessionChange`` values to the real-time publisher.
 
@@ -224,6 +231,4 @@ async def publish_after_commit(request: Request, changes: list[SessionChange]) -
     """
     if not changes:
         return
-    # TODO(realtime): Yifeng's app.realtime.publisher is still a stub. Once it
-    # exists: await publisher.publish(request.app.state.redis, changes)
-
+    await publish_changes(request.app.state.redis, changes)

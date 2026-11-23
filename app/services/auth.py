@@ -40,7 +40,9 @@ class IssuedLogin:
     now: datetime
 
 
-def _issue_access(settings: Settings, account_id: uuid.UUID, now: datetime) -> AccessToken:
+def _issue_access(
+    settings: Settings, account_id: uuid.UUID, now: datetime
+) -> AccessToken:
     private_key, _ = settings.require_jwt_keys()
     return issue_access_token(
         account_id=account_id,
@@ -69,11 +71,17 @@ async def login(
     client_ip: str | None,
 ) -> IssuedLogin:
     async with factory() as db:
-        account = await db.scalar(select(Account).where(func.lower(Account.email) == email))
+        account = await db.scalar(
+            select(Account).where(func.lower(Account.email) == email)
+        )
     if not verify_password(account.password_hash if account else None, password):
         raise AppError(ErrorCode.INVALID_CREDENTIALS)
     assert account is not None
-    new_hash = hash_password(password) if password_needs_rehash(account.password_hash) else None
+    new_hash = (
+        hash_password(password)
+        if password_needs_rehash(account.password_hash)
+        else None
+    )
 
     refresh, csrf = new_token(), new_token()
     async with factory.begin() as db:
@@ -99,7 +107,12 @@ async def login(
     if new_hash is not None:
         await _rehash(factory, account.id, new_hash)
     return IssuedLogin(
-        account, _issue_access(settings, account.id, now), refresh, csrf, expires_at, now
+        account,
+        _issue_access(settings, account.id, now),
+        refresh,
+        csrf,
+        expires_at,
+        now,
     )
 
 
@@ -108,7 +121,9 @@ async def _rehash(
 ) -> None:
     async with factory.begin() as db:
         await db.execute(
-            update(Account).where(Account.id == account_id).values(password_hash=new_hash)
+            update(Account)
+            .where(Account.id == account_id)
+            .values(password_hash=new_hash)
         )
 
 
@@ -154,7 +169,9 @@ async def refresh(
             if now - row.rotated_at < timedelta(seconds=REFRESH_ROTATION_GRACE_SECONDS):
                 raise AppError(ErrorCode.REFRESH_ALREADY_ROTATED)
             await _revoke_family(db, row.family_id, now, RevokeReason.REUSE_DETECTED)
-            error = AppError(ErrorCode.AUTHENTICATION_REQUIRED, "Refresh token reuse detected.")
+            error = AppError(
+                ErrorCode.AUTHENTICATION_REQUIRED, "Refresh token reuse detected."
+            )
         else:
             row.rotated_at = now
             row.last_used_at = now
@@ -200,4 +217,6 @@ async def logout(
             return
         if not _csrf_ok(csrf_header, locked.session):
             raise AppError(ErrorCode.FORBIDDEN, "CSRF token mismatch.")
-        await _revoke_family(db, locked.session.family_id, locked.now, RevokeReason.LOGOUT)
+        await _revoke_family(
+            db, locked.session.family_id, locked.now, RevokeReason.LOGOUT
+        )

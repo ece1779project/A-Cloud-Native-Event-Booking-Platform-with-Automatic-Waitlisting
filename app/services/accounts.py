@@ -17,11 +17,19 @@ from app.db.locks import RowMissing, lock_account_scope
 from app.domain.enums import ManagementActionType, RevokeReason, Role
 from app.models.account import Account
 from app.models.auth_session import AuthSession
-from app.schemas.accounts import AccountCreate
+from app.schemas.accounts import AccountCreate, AccountView
 from app.services.audit import record_action
+from app.services.idempotency import (
+    CommandContext,
+    CommandOutcome,
+    management_outcome,
+    run_management,
+)
 
 
-async def register(factory: async_sessionmaker[AsyncSession], body: AccountCreate) -> Account:
+async def register(
+    factory: async_sessionmaker[AsyncSession], body: AccountCreate
+) -> Account:
     password_hash = hash_password(body.password)
     account = Account(
         email=body.email,
@@ -36,7 +44,9 @@ async def register(factory: async_sessionmaker[AsyncSession], body: AccountCreat
             await db.refresh(account)
     except IntegrityError as exc:
         if sqlstate(exc) == UNIQUE_VIOLATION:
-            raise AppError(ErrorCode.EMAIL_ALREADY_REGISTERED, details={"field": "email"}) from exc
+            raise AppError(
+                ErrorCode.EMAIL_ALREADY_REGISTERED, details={"field": "email"}
+            ) from exc
         raise
     return account
 
@@ -46,7 +56,9 @@ async def load_account(db: AsyncSession, account_id: uuid.UUID) -> Account | Non
 
 
 async def find_by_email(db: AsyncSession, email: str) -> Account | None:
-    return await db.scalar(select(Account).where(func.lower(Account.email) == email.strip().lower()))
+    return await db.scalar(
+        select(Account).where(func.lower(Account.email) == email.strip().lower())
+    )
 
 
 async def list_accounts(
@@ -67,24 +79,34 @@ async def admin_patch_account(
     role: Role | None,
     disabled: bool | None,
     reason: str,
-) -> Account:
+    request_id: uuid.UUID,
+) -> CommandOutcome:
     if target_id == actor.id:
-        raise AppError(ErrorCode.FORBIDDEN, "Administrators cannot change their own account.")
+        raise AppError(
+            ErrorCode.FORBIDDEN, "Administrators cannot change their own account."
+        )
     correlation_id = uuid.uuid7()
 
-    async with factory.begin() as db:
+    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
         try:
             locked = await lock_account_scope(db, exclusive_ids=[target_id])
         except RowMissing as exc:
             raise AppError(ErrorCode.RESOURCE_NOT_FOUND) from exc
         target, now = locked.accounts[target_id], locked.now
         if target.role == Role.ADMIN.value:
-            raise AppError(ErrorCode.FORBIDDEN, "Administrator accounts cannot be changed.")
+            raise AppError(
+                ErrorCode.FORBIDDEN, "Administrator accounts cannot be changed."
+            )
 
         async def audit(action: ManagementActionType) -> None:
             await record_action(
-                db, actor_id=actor.id, action=action, reason=reason, occurred_at=now,
-                correlation_id=correlation_id, target_account_id=target.id,
+                db,
+                actor_id=actor.id,
+                action=action,
+                reason=reason,
+                occurred_at=now,
+                correlation_id=correlation_id,
+                target_account_id=target.id,
             )
 
         if role is not None and role.value != target.role:
@@ -95,12 +117,33 @@ async def admin_patch_account(
             target.disabled_at = now
             await db.execute(
                 update(AuthSession)
-                .where(AuthSession.account_id == target.id, AuthSession.revoked_at.is_(None))
-                .values(revoked_at=now, revoke_reason=RevokeReason.ACCOUNT_DISABLED.value)
+                .where(
+                    AuthSession.account_id == target.id,
+                    AuthSession.revoked_at.is_(None),
+                )
+                .values(
+                    revoked_at=now, revoke_reason=RevokeReason.ACCOUNT_DISABLED.value
+                )
             )
             await audit(ManagementActionType.ACCOUNT_DISABLED)
         elif disabled is False and target.disabled_at is not None:
             target.disabled_at = None
             await audit(ManagementActionType.ACCOUNT_ENABLED)
+        await db.flush()
+        await db.refresh(target)
+        return management_outcome(AccountView.of(target))
+
     # TODO(realtime): publish the post-commit control invalidation (Section 9.3 step 4).
-    return target
+    return await run_management(
+        factory,
+        actor_id=actor.id,
+        request_id=request_id,
+        operation="admin_patch_account",
+        params={
+            "account_id": target_id,
+            "role": role.value if role else None,
+            "disabled": disabled,
+            "reason": reason,
+        },
+        execute=execute,
+    )

@@ -35,20 +35,30 @@ def error_response(
     headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     body = ErrorEnvelope(
-        error=ErrorBody(code=code, message=message, retryable=retryable, details=details or {}),
+        error=ErrorBody(
+            code=code, message=message, retryable=retryable, details=details or {}
+        ),
         meta=Meta(
             request_id=request_id_of(request),
             server_time=datetime.now(UTC),
             session_version=session_version,
         ),
     )
-    return JSONResponse(body.model_dump(mode="json"), status_code=status, headers=headers)
+    return JSONResponse(
+        body.model_dump(mode="json"), status_code=status, headers=headers
+    )
 
 
 def _from_app_error(request: Request, exc: AppError) -> JSONResponse:
     return error_response(
-        request, exc.code, exc.message, retryable=exc.retryable, status=exc.status,
-        details=exc.details, session_version=exc.session_version, headers=exc.headers,
+        request,
+        exc.code,
+        exc.message,
+        retryable=exc.retryable,
+        status=exc.status,
+        details=exc.details,
+        session_version=exc.session_version,
+        headers=exc.headers,
     )
 
 
@@ -63,7 +73,10 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def validation(request: Request, exc: RequestValidationError):
-        errors = [{"loc": list(e["loc"]), "type": e["type"], "msg": e["msg"]} for e in exc.errors()]
+        errors = [
+            {"loc": list(e["loc"]), "type": e["type"], "msg": e["msg"]}
+            for e in exc.errors()
+        ]
         return _simple(request, ErrorCode.VALIDATION_ERROR, details={"errors": errors})
 
     @app.exception_handler(StarletteHTTPException)
@@ -80,7 +93,10 @@ def register_exception_handlers(app: FastAPI) -> None:
     async def db_error(request: Request, exc: DBAPIError):
         if is_retryable_timeout(exc):
             return _simple(request, ErrorCode.LOCK_TIMEOUT)
-        if isinstance(exc, (OperationalError, InterfaceError)) or exc.connection_invalidated:
+        if (
+            isinstance(exc, (OperationalError, InterfaceError))
+            or exc.connection_invalidated
+        ):
             return _simple(request, ErrorCode.DATABASE_UNAVAILABLE)
         log.exception("unexpected database error")
         return _simple(request, ErrorCode.INTERNAL_ERROR)

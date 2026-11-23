@@ -16,9 +16,13 @@ from app.domain.enums import Role
 class Account(Base):
     __tablename__ = "accounts"
     __table_args__ = (
-        CheckConstraint("role IN ('ATTENDEE', 'ORGANIZER', 'ADMIN')", name="role_valid"),
+        CheckConstraint(
+            "role IN ('ATTENDEE', 'ORGANIZER', 'ADMIN')", name="role_valid"
+        ),
         CheckConstraint("length(btrim(email)) > 0", name="email_nonblank"),
-        CheckConstraint("length(btrim(display_name)) > 0", name="display_name_nonblank"),
+        CheckConstraint(
+            "length(btrim(display_name)) > 0", name="display_name_nonblank"
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid7)

@@ -47,20 +47,52 @@ _SPEC: dict[ErrorCode, tuple[int, bool, str]] = {
     ErrorCode.FORBIDDEN: (403, False, "You are not allowed to perform this action."),
     ErrorCode.ACCOUNT_DISABLED: (403, False, "This account is disabled."),
     ErrorCode.RESOURCE_NOT_FOUND: (404, False, "The resource does not exist."),
-    ErrorCode.IDEMPOTENCY_CONFLICT: (409, False, "This Idempotency-Key was used with different inputs."),
-    ErrorCode.INVALID_STATE_TRANSITION: (409, False, "The operation is not allowed in the current state."),
+    ErrorCode.IDEMPOTENCY_CONFLICT: (
+        409,
+        False,
+        "This Idempotency-Key was used with different inputs.",
+    ),
+    ErrorCode.INVALID_STATE_TRANSITION: (
+        409,
+        False,
+        "The operation is not allowed in the current state.",
+    ),
     ErrorCode.REGISTRATION_NOT_OPEN: (409, False, "Registration has not opened yet."),
     ErrorCode.REGISTRATION_CLOSED: (409, False, "Registration has closed."),
     ErrorCode.SESSION_CANCELLED: (409, False, "The session is cancelled."),
     ErrorCode.EVENT_CANCELLED: (409, False, "The event is cancelled."),
     ErrorCode.PARTICIPATION_EXPIRED: (409, False, "The hold or offer has expired."),
     ErrorCode.SESSION_STARTED: (409, False, "The session has already started."),
-    ErrorCode.CAPACITY_BELOW_OCCUPIED: (409, False, "Capacity cannot go below occupied seats."),
-    ErrorCode.SCHEDULE_FROZEN: (409, False, "Session times cannot change once registrations exist."),
-    ErrorCode.EMAIL_ALREADY_REGISTERED: (409, False, "This email is already registered."),
-    ErrorCode.WAITLIST_REQUIRED: (409, False, "No seat can be booked directly while the session is full or queued."),
-    ErrorCode.DIRECT_BOOKING_AVAILABLE: (409, False, "A seat is available; book it directly."),
-    ErrorCode.REFRESH_ALREADY_ROTATED: (409, False, "This refresh token was just rotated."),
+    ErrorCode.CAPACITY_BELOW_OCCUPIED: (
+        409,
+        False,
+        "Capacity cannot go below occupied seats.",
+    ),
+    ErrorCode.SCHEDULE_FROZEN: (
+        409,
+        False,
+        "Session times cannot change once registrations exist.",
+    ),
+    ErrorCode.EMAIL_ALREADY_REGISTERED: (
+        409,
+        False,
+        "This email is already registered.",
+    ),
+    ErrorCode.WAITLIST_REQUIRED: (
+        409,
+        False,
+        "No seat can be booked directly while the session is full or queued.",
+    ),
+    ErrorCode.DIRECT_BOOKING_AVAILABLE: (
+        409,
+        False,
+        "A seat is available; book it directly.",
+    ),
+    ErrorCode.REFRESH_ALREADY_ROTATED: (
+        409,
+        False,
+        "This refresh token was just rotated.",
+    ),
     ErrorCode.RATE_LIMITED: (429, True, "Too many requests."),
     ErrorCode.LOCK_TIMEOUT: (503, True, "The session is busy; retry shortly."),
     ErrorCode.DATABASE_UNAVAILABLE: (503, True, "The database is unavailable."),
@@ -74,7 +106,6 @@ def status_of(code: ErrorCode) -> int:
 
 
 class AppError(Exception):
-
     def __init__(
         self,
         code: ErrorCode,

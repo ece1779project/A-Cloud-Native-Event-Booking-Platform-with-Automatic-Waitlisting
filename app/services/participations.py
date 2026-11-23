@@ -3,8 +3,8 @@ administrator cancel) and the attendee's participation queries.
 
 Every command here has the same shape (TECHNICAL_DESIGN 7.3):
 
-1. ``_lock_own`` (or ``_lock_any`` for the administrator): find the row's
-   session, lock event and session, share-lock the caller's account.
+1. ``_lock``: find the row's session, lock event and session, share-lock the
+   caller's account.
 2. ``ctx.recheck``: replay if the original request committed meanwhile.
 3. ``_settle``: ``expire_if_overdue`` and ``end_waiting_if_closed``, so a
    late caller meets the outcome the worker would have written. If that
@@ -12,12 +12,17 @@ Every command here has the same shape (TECHNICAL_DESIGN 7.3):
 4. Validate against the resulting state, apply the transition, promote if a
    seat was freed, and ``build_session_change`` last.
 
-Decline and leave belong to Jianye and follow the same shape.
+Cancel, decline and leave differ only in the states they accept, the end
+reason they write and whether they free a seat, so one function, ``_release``,
+implements all three. A command on an attempt that has already ended returns
+``200`` unchanged only if that same command ended it; otherwise the ``409``
+for whatever did.
 
 Design: TECHNICAL_DESIGN.md Sections 7.3, 7.4 and 8.4.
 """
 
 import uuid
+from dataclasses import dataclass
 from typing import Literal
 
 from sqlalchemy import case, select
@@ -43,7 +48,7 @@ from app.domain.enums import (
     PublicationStatus as PS,
 )
 from app.domain.timing import RegistrationStatus, has_started, registration_status
-from app.domain.transitions import ACTIVE_STATES, OCCUPYING_STATES
+from app.domain.transitions import ACTIVE_STATES, OCCUPYING_STATES, TERMINAL_STATES
 from app.models.account import Account
 from app.models.event import Event
 from app.models.event_session import EventSession
@@ -154,7 +159,9 @@ def registration_block(event: Event, session: EventSession, now) -> ErrorCode | 
         return ErrorCode.SESSION_CANCELLED
     if event.status != PS.PUBLISHED or session.status != PS.PUBLISHED:
         raise AppError(ErrorCode.RESOURCE_NOT_FOUND)
-    match registration_status(session.registration_opens_at, session.registration_closes_at, now):
+    match registration_status(
+        session.registration_opens_at, session.registration_closes_at, now
+    ):
         case RegistrationStatus.NOT_OPEN:
             return ErrorCode.REGISTRATION_NOT_OPEN
         case RegistrationStatus.CLOSED:
@@ -202,7 +209,9 @@ async def _settle(
     """Apply what the worker would have: expiry, then closure for a waiter.
     An expired seat is offered to the queue in the same transaction."""
     transitions = await expire_if_overdue(db, scope, p, correlation_id=correlation_id)
-    transitions += await end_waiting_if_closed(db, scope, p, correlation_id=correlation_id)
+    transitions += await end_waiting_if_closed(
+        db, scope, p, correlation_id=correlation_id
+    )
     if p.state == S.EXPIRED and transitions:
         transitions += await _promote(db, scope, correlation_id, settings)
     return transitions
@@ -250,6 +259,21 @@ async def _reject(
     )
 
 
+async def _already_ended(
+    db: AsyncSession,
+    scope: LockedScope,
+    p: Participation,
+    own_reason: EndReason,
+    cause: ChangeCause,
+) -> CommandOutcome:
+    """A command on a terminal attempt: the unchanged result if this command
+    ended it (a repeat, the seat released only once), else the 409 for
+    whatever did."""
+    if p.end_reason == own_reason:
+        return await view_outcome(db, scope, p, status=200, code="CANCELLED")
+    return await _reject(db, scope, p, terminal_code(p), cause, [])
+
+
 # ---- Commands ----
 
 
@@ -271,7 +295,9 @@ async def confirm(
     operation = "CONFIRM"
     # simulation_result is part of the hash: a retry after a failure needs a new key.
     phash = parameter_hash(
-        operation, participation_id=participation_id, simulation_result=simulation_result
+        operation,
+        participation_id=participation_id,
+        simulation_result=simulation_result,
     )
     cause = ChangeCause.CONFIRMATION
 
@@ -289,12 +315,16 @@ async def confirm(
             case S.CANCELLED | S.EXPIRED:
                 return await _reject(db, scope, p, terminal_code(p), cause, [])
             case S.WAITLISTED:
-                return await _reject(db, scope, p, ErrorCode.INVALID_STATE_TRANSITION, cause, [])
+                return await _reject(
+                    db, scope, p, ErrorCode.INVALID_STATE_TRANSITION, cause, []
+                )
 
         # HELD or OFFERED, still inside the deadline.
         if simulation_result == "failure":
             # Nothing changes: same state, same deadline, no version bump (FR-05.3).
-            return await view_outcome(db, scope, p, status=200, code="PAYMENT_SIMULATION_FAILED")
+            return await view_outcome(
+                db, scope, p, status=200, code="PAYMENT_SIMULATION_FAILED"
+            )
         await apply_transition(
             db,
             p,
@@ -308,13 +338,91 @@ async def confirm(
         change = await build_session_change(
             db, scope, cause, [ParticipationTransition.of(p)]
         )
-        return await view_outcome(db, scope, p, status=200, code="CONFIRMED", change=change)
+        return await view_outcome(
+            db, scope, p, status=200, code="CONFIRMED", change=change
+        )
 
     return await run_command(
         factory,
         account_id=account.id,
         request_id=request_id,
         operation=operation,
+        phash=phash,
+        execute=execute,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _Release:
+    """What distinguishes cancel, decline and leave."""
+
+    operation: str  # the receipt's operation name: stored receipts depend on it
+    from_states: tuple[S, ...]
+    end_reason: EndReason
+    frees_seat: bool
+
+
+_CANCEL = _Release(
+    "CANCEL", (S.HELD, S.CONFIRMED), EndReason.USER_CANCELLED, frees_seat=True
+)
+_DECLINE = _Release("DECLINE", (S.OFFERED,), EndReason.OFFER_DECLINED, frees_seat=True)
+_LEAVE = _Release("LEAVE", (S.WAITLISTED,), EndReason.WITHDRAWN, frees_seat=False)
+
+
+async def _release(
+    factory: Factory,
+    settings: Settings,
+    rule: _Release,
+    *,
+    account: Account,
+    participation_id: uuid.UUID,
+    request_id: uuid.UUID,
+) -> CommandOutcome:
+    """End the caller's own attempt before the session starts (FR-08.1). A
+    freed seat goes to the queue in the same transaction. The command never
+    turns into another one: leave on an offer is a 409, not a decline."""
+    phash = parameter_hash(rule.operation, participation_id=participation_id)
+    cause = ChangeCause.ATTENDEE_RELEASE
+
+    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
+        scope, p = await _lock(db, participation_id, account, owner_only=True)
+        if (replayed := await ctx.recheck(db)) is not None:
+            return replayed
+        if settled := await _settle(db, scope, p, ctx.request_id, settings):
+            return await _reject(db, scope, p, terminal_code(p), cause, settled)
+        if p.state in TERMINAL_STATES:
+            return await _already_ended(db, scope, p, rule.end_reason, cause)
+        # After the start an offer or hold has already expired and a waiter
+        # has been closed above, so only a confirmed booking can stop here.
+        if has_started(scope.session.starts_at, scope.now):
+            return await _reject(db, scope, p, ErrorCode.SESSION_STARTED, cause, [])
+        if p.state not in rule.from_states:
+            return await _reject(
+                db, scope, p, ErrorCode.INVALID_STATE_TRANSITION, cause, []
+            )
+
+        await apply_transition(
+            db,
+            p,
+            S.CANCELLED,
+            reason_code=rule.end_reason,
+            now=scope.now,
+            correlation_id=ctx.request_id,
+            actor_id=account.id,
+        )
+        transitions = [ParticipationTransition.of(p)]
+        if rule.frees_seat:
+            transitions += await _promote(db, scope, ctx.request_id, settings)
+        change = await build_session_change(db, scope, cause, transitions)
+        return await view_outcome(
+            db, scope, p, status=200, code="CANCELLED", change=change
+        )
+
+    return await run_command(
+        factory,
+        account_id=account.id,
+        request_id=request_id,
+        operation=rule.operation,
         phash=phash,
         execute=execute,
     )
@@ -328,51 +436,52 @@ async def cancel(
     participation_id: uuid.UUID,
     request_id: uuid.UUID,
 ) -> CommandOutcome:
-    """Attendee cancel of a hold or confirmed booking (FR-08). The freed seat
-    goes to the queue in the same transaction. An offer is declined and a
-    waitlist entry is left with their own commands, not this one."""
-    operation = "CANCEL"
-    phash = parameter_hash(operation, participation_id=participation_id)
-    cause = ChangeCause.ATTENDEE_RELEASE
-
-    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
-        scope, p = await _lock(db, participation_id, account, owner_only=True)
-        if (replayed := await ctx.recheck(db)) is not None:
-            return replayed
-        if settled := await _settle(db, scope, p, ctx.request_id, settings):
-            return await _reject(db, scope, p, terminal_code(p), cause, settled)
-
-        if p.state == S.CANCELLED:
-            # Repeated cancel: unchanged result, the seat was released only once.
-            return await view_outcome(db, scope, p, status=200, code="CANCELLED")
-        if p.state == S.EXPIRED:
-            return await _reject(db, scope, p, ErrorCode.PARTICIPATION_EXPIRED, cause, [])
-        if has_started(scope.session.starts_at, scope.now):
-            return await _reject(db, scope, p, ErrorCode.SESSION_STARTED, cause, [])
-        if p.state not in (S.HELD, S.CONFIRMED):
-            return await _reject(db, scope, p, ErrorCode.INVALID_STATE_TRANSITION, cause, [])
-
-        await apply_transition(
-            db,
-            p,
-            S.CANCELLED,
-            reason_code=EndReason.USER_CANCELLED,
-            now=scope.now,
-            correlation_id=ctx.request_id,
-            actor_id=account.id,
-        )
-        transitions = [ParticipationTransition.of(p)]
-        transitions += await _promote(db, scope, ctx.request_id, settings)
-        change = await build_session_change(db, scope, cause, transitions)
-        return await view_outcome(db, scope, p, status=200, code="CANCELLED", change=change)
-
-    return await run_command(
+    """Attendee cancel of a hold or confirmed booking; the seat is offered."""
+    return await _release(
         factory,
-        account_id=account.id,
+        settings,
+        _CANCEL,
+        account=account,
+        participation_id=participation_id,
         request_id=request_id,
-        operation=operation,
-        phash=phash,
-        execute=execute,
+    )
+
+
+async def decline(
+    factory: Factory,
+    settings: Settings,
+    *,
+    account: Account,
+    participation_id: uuid.UUID,
+    request_id: uuid.UUID,
+) -> CommandOutcome:
+    """Decline an offer; the seat goes to the next waiter (FR-07.1)."""
+    return await _release(
+        factory,
+        settings,
+        _DECLINE,
+        account=account,
+        participation_id=participation_id,
+        request_id=request_id,
+    )
+
+
+async def leave(
+    factory: Factory,
+    settings: Settings,
+    *,
+    account: Account,
+    participation_id: uuid.UUID,
+    request_id: uuid.UUID,
+) -> CommandOutcome:
+    """Leave the waitlist. No seat is freed, so nobody is promoted."""
+    return await _release(
+        factory,
+        settings,
+        _LEAVE,
+        account=account,
+        participation_id=participation_id,
+        request_id=request_id,
     )
 
 
@@ -397,10 +506,8 @@ async def admin_cancel(
             return replayed
         if settled := await _settle(db, scope, p, ctx.request_id, settings):
             return await _reject(db, scope, p, terminal_code(p), cause, settled)
-        if p.state == S.CANCELLED:
-            return await view_outcome(db, scope, p, status=200, code="CANCELLED")
-        if p.state == S.EXPIRED:
-            return await _reject(db, scope, p, ErrorCode.PARTICIPATION_EXPIRED, cause, [])
+        if p.state in TERMINAL_STATES:
+            return await _already_ended(db, scope, p, EndReason.ADMIN_CANCELLED, cause)
 
         freed_seat = S(p.state) in OCCUPYING_STATES
         await apply_transition(
@@ -425,7 +532,9 @@ async def admin_cancel(
             target_participation_id=p.id,
         )
         change = await build_session_change(db, scope, cause, transitions)
-        return await view_outcome(db, scope, p, status=200, code="CANCELLED", change=change)
+        return await view_outcome(
+            db, scope, p, status=200, code="CANCELLED", change=change
+        )
 
     return await run_command(
         factory,
@@ -455,7 +564,10 @@ async def my_participation(
         event = await db.get(Event, s.event_id)
         p = await db.scalar(
             select(Participation)
-            .where(Participation.session_id == session_id, Participation.account_id == account.id)
+            .where(
+                Participation.session_id == session_id,
+                Participation.account_id == account.id,
+            )
             .order_by(
                 case((Participation.state.in_(ACTIVE_STATES), 0), else_=1),
                 Participation.created_at.desc(),
@@ -500,7 +612,8 @@ async def my_participations(
             )
         ).all()
         items = [
-            await build_view(db, p, s, e, historical=_historical(p)) for p, s, e in rows[:limit]
+            await build_view(db, p, s, e, historical=_historical(p))
+            for p, s, e in rows[:limit]
         ]
     next_cursor = encode_cursor({"o": offset + limit}) if len(rows) > limit else None
     return Page(items=items, next_cursor=next_cursor)

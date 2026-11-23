@@ -2,9 +2,6 @@
 decline, leave, ``my-participation``, ``/me/participations`` and
 ``GET /requests/{request_id}``.
 
-Decline and leave are Jianye's and are added here with the same shape as
-cancel.
-
 Design: TECHNICAL_DESIGN.md Section 8.4.
 """
 
@@ -115,13 +112,58 @@ async def cancel(
     settings=Depends(get_settings_dep),
 ):
     outcome = await svc.cancel(
-        factory, settings, account=account, participation_id=participation_id, request_id=key
+        factory,
+        settings,
+        account=account,
+        participation_id=participation_id,
+        request_id=key,
+    )
+    return await _respond(request, outcome)
+
+
+@router.post("/participations/{participation_id}/decline", **COMMAND)
+async def decline(
+    request: Request,
+    participation_id: uuid.UUID,
+    body: EmptyBody | None = None,
+    account: Account = Depends(limit_registration_writes),
+    key: uuid.UUID = Depends(idempotency_key),
+    factory=Depends(get_factory),
+    settings=Depends(get_settings_dep),
+):
+    outcome = await svc.decline(
+        factory,
+        settings,
+        account=account,
+        participation_id=participation_id,
+        request_id=key,
+    )
+    return await _respond(request, outcome)
+
+
+@router.post("/participations/{participation_id}/leave", **COMMAND)
+async def leave(
+    request: Request,
+    participation_id: uuid.UUID,
+    body: EmptyBody | None = None,
+    account: Account = Depends(limit_registration_writes),
+    key: uuid.UUID = Depends(idempotency_key),
+    factory=Depends(get_factory),
+    settings=Depends(get_settings_dep),
+):
+    outcome = await svc.leave(
+        factory,
+        settings,
+        account=account,
+        participation_id=participation_id,
+        request_id=key,
     )
     return await _respond(request, outcome)
 
 
 @router.get(
-    "/sessions/{session_id}/my-participation", response_model=Envelope[ParticipationView]
+    "/sessions/{session_id}/my-participation",
+    response_model=Envelope[ParticipationView],
 )
 async def my_participation(
     request: Request,
@@ -146,7 +188,9 @@ async def my_participations(
     return Envelope(data=page, meta=meta(request))
 
 
-@router.get("/participations/{participation_id}", response_model=Envelope[ParticipationView])
+@router.get(
+    "/participations/{participation_id}", response_model=Envelope[ParticipationView]
+)
 async def get_participation(
     request: Request,
     participation_id: uuid.UUID,

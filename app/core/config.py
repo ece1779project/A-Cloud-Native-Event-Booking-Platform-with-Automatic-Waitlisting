@@ -46,8 +46,8 @@ class Settings(BaseSettings):
     worker_metrics_port: int = Field(default=9100, ge=1, le=65535)
 
     # Optional here so Alembic and tests can build Settings; the API checks them at startup.
-    jwt_private_key: SecretStr | None = None   # Ed25519 PEM (PKCS8)
-    jwt_public_key: str | None = None          # Ed25519 PEM (SubjectPublicKeyInfo)
+    jwt_private_key: SecretStr | None = None  # Ed25519 PEM (PKCS8)
+    jwt_public_key: str | None = None  # Ed25519 PEM (SubjectPublicKeyInfo)
 
     bootstrap_admin_email: str | None = None
     bootstrap_admin_password: SecretStr | None = None
@@ -65,12 +65,18 @@ class Settings(BaseSettings):
 
     def require_jwt_keys(self) -> tuple[str, str]:
         if self.jwt_private_key is None or self.jwt_public_key is None:
-            raise RuntimeError("JWT_PRIVATE_KEY and JWT_PUBLIC_KEY must be set for the API")
+            raise RuntimeError(
+                "JWT_PRIVATE_KEY and JWT_PUBLIC_KEY must be set for the API"
+            )
         return self.jwt_private_key.get_secret_value(), self.jwt_public_key
 
 
 def _parse_cidrs(value: str) -> tuple[IPv4Network | IPv6Network, ...]:
-    return tuple(ip_network(part.strip(), strict=False) for part in value.split(",") if part.strip())
+    return tuple(
+        ip_network(part.strip(), strict=False)
+        for part in value.split(",")
+        if part.strip()
+    )
 
 
 @lru_cache

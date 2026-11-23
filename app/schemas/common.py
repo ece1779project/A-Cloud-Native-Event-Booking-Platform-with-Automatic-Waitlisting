@@ -6,7 +6,6 @@ Design: TECHNICAL_DESIGN.md Section 8.1.
 
 import base64
 import json
-import uuid
 from datetime import datetime
 from typing import Any
 
@@ -43,9 +42,7 @@ class Page[T](BaseModel):
 
 
 class StrictModel(BaseModel):
-
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
 
 
 def encode_cursor(payload: dict[str, Any]) -> str:
@@ -59,8 +56,8 @@ def decode_cursor(cursor: str) -> dict[str, Any]:
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         value = json.loads(base64.urlsafe_b64decode(padded))
-        if not isinstance(value, dict):
-            raise ValueError
-        return value
     except ValueError as exc:
         raise AppError(ErrorCode.VALIDATION_ERROR, "Invalid cursor.") from exc
+    if not isinstance(value, dict):
+        raise AppError(ErrorCode.VALIDATION_ERROR, "Invalid cursor.")
+    return value

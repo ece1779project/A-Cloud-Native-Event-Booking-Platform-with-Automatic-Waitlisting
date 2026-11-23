@@ -11,8 +11,9 @@ from fastapi import APIRouter, Depends, Query, Request, status
 from app.api.dependencies import (
     get_factory,
     get_optional_account,
+    idempotency_key,
+    management_response,
     meta,
-    publish_after_commit,
     require_manager,
 )
 from app.core.constants import EVENT_LIST_PAGE_SIZE
@@ -24,9 +25,6 @@ from app.services import events as svc
 from app.services import sessions as session_svc
 
 router = APIRouter(tags=["events"])
-
-# TODO(idempotency): doc/openapi.yaml requires Idempotency-Key on the management
-# commands below too. Not wired yet; same open item as PATCH /admin/accounts.
 
 Limit = Query(EVENT_LIST_PAGE_SIZE, ge=1, le=100)
 
@@ -40,7 +38,9 @@ async def list_events(
     limit: int = Limit,
     factory=Depends(get_factory),
 ):
-    page = await svc.list_events(factory, q=q, open_only=open, cursor=cursor, limit=limit)
+    page = await svc.list_events(
+        factory, q=q, open_only=open, cursor=cursor, limit=limit
+    )
     return Envelope(data=page, meta=meta(request))
 
 
@@ -63,17 +63,24 @@ async def get_event(
     viewer: Account | None = Depends(get_optional_account),
     factory=Depends(get_factory),
 ):
-    return Envelope(data=await svc.get_event(factory, viewer, event_id), meta=meta(request))
+    return Envelope(
+        data=await svc.get_event(factory, viewer, event_id), meta=meta(request)
+    )
 
 
-@router.post("/events", status_code=status.HTTP_201_CREATED, response_model=Envelope[EventView])
+@router.post(
+    "/events", status_code=status.HTTP_201_CREATED, response_model=Envelope[EventView]
+)
 async def create_event(
     request: Request,
     body: EventCreate,
     actor: Account = Depends(require_manager),
+    key: uuid.UUID = Depends(idempotency_key),
     factory=Depends(get_factory),
 ):
-    return Envelope(data=await svc.create_event(factory, actor, body), meta=meta(request))
+    return await management_response(
+        request, await svc.create_event(factory, actor, body, request_id=key)
+    )
 
 
 @router.patch("/events/{event_id}", response_model=Envelope[EventView])
@@ -82,9 +89,12 @@ async def patch_event(
     event_id: uuid.UUID,
     body: EventPatch,
     actor: Account = Depends(require_manager),
+    key: uuid.UUID = Depends(idempotency_key),
     factory=Depends(get_factory),
 ):
-    return Envelope(data=await svc.patch_event(factory, actor, event_id, body), meta=meta(request))
+    return await management_response(
+        request, await svc.patch_event(factory, actor, event_id, body, request_id=key)
+    )
 
 
 @router.post("/events/{event_id}/publish", response_model=Envelope[EventView])
@@ -92,11 +102,12 @@ async def publish_event(
     request: Request,
     event_id: uuid.UUID,
     actor: Account = Depends(require_manager),
+    key: uuid.UUID = Depends(idempotency_key),
     factory=Depends(get_factory),
 ):
-    view, changes = await svc.publish_event(factory, actor, event_id)
-    await publish_after_commit(request, changes)
-    return Envelope(data=view, meta=meta(request))
+    return await management_response(
+        request, await svc.publish_event(factory, actor, event_id, request_id=key)
+    )
 
 
 @router.post("/events/{event_id}/cancel", response_model=Envelope[EventView])
@@ -105,11 +116,13 @@ async def cancel_event(
     event_id: uuid.UUID,
     body: CancelRequest,
     actor: Account = Depends(require_manager),
+    key: uuid.UUID = Depends(idempotency_key),
     factory=Depends(get_factory),
 ):
-    view, changes = await svc.cancel_event(factory, actor, event_id, body.reason)
-    await publish_after_commit(request, changes)
-    return Envelope(data=view, meta=meta(request))
+    outcome = await svc.cancel_event(
+        factory, actor, event_id, body.reason, request_id=key
+    )
+    return await management_response(request, outcome)
 
 
 @router.post(
@@ -122,7 +135,10 @@ async def create_session(
     event_id: uuid.UUID,
     body: SessionCreate,
     actor: Account = Depends(require_manager),
+    key: uuid.UUID = Depends(idempotency_key),
     factory=Depends(get_factory),
 ):
-    view = await session_svc.create_session(factory, actor, event_id, body)
-    return Envelope(data=view, meta=meta(request, session_version=view.version))
+    outcome = await session_svc.create_session(
+        factory, actor, event_id, body, request_id=key
+    )
+    return await management_response(request, outcome)

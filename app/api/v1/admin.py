@@ -54,10 +54,16 @@ async def list_accounts(
     _admin: Account = Depends(require_admin),
     factory=Depends(get_factory),
 ):
-    rows = await accounts_service.list_accounts(factory, after_id=_cursor_id(cursor), limit=limit)
-    next_cursor = encode_cursor({"id": str(rows[limit - 1].id)}) if len(rows) > limit else None
+    rows = await accounts_service.list_accounts(
+        factory, after_id=_cursor_id(cursor), limit=limit
+    )
+    next_cursor = (
+        encode_cursor({"id": str(rows[limit - 1].id)}) if len(rows) > limit else None
+    )
     return Envelope(
-        data=Page(items=[AccountView.of(a) for a in rows[:limit]], next_cursor=next_cursor),
+        data=Page(
+            items=[AccountView.of(a) for a in rows[:limit]], next_cursor=next_cursor
+        ),
         meta=meta(request),
     )
 
@@ -68,20 +74,25 @@ async def patch_account(
     account_id: uuid.UUID,
     body: AdminAccountPatch,
     admin: Account = Depends(require_admin),
+    key: uuid.UUID = Depends(idempotency_key),
     factory=Depends(get_factory),
 ):
-    # TODO(idempotency): require Idempotency-Key as doc/openapi.yaml specifies.
-    account = await accounts_service.admin_patch_account(
+    outcome = await accounts_service.admin_patch_account(
         factory,
         actor=admin,
         target_id=account_id,
         role=Role(body.role) if body.role else None,
         disabled=body.disabled,
         reason=body.reason,
+        request_id=key,
     )
-    if body.disabled is True and account.disabled_at is not None:
-        await publish_auth_revoked(request.app.state.redis, account.id)
-    return Envelope(data=AccountView.of(account), meta=meta(request))
+    if (
+        body.disabled is True
+        and not outcome.is_error
+        and outcome.payload.get("disabled") is True
+    ):
+        await publish_auth_revoked(request.app.state.redis, account_id)
+    return outcome_response(request, outcome, with_result=False)
 
 
 @router.post(
@@ -108,4 +119,3 @@ async def cancel_participation(
     )
     await publish_after_commit(request, outcome.changes)
     return outcome_response(request, outcome)
-

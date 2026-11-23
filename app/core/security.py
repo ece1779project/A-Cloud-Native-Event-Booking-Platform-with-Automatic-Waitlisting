@@ -30,8 +30,11 @@ def hash_password(password: str) -> str:
 
 def verify_password(password_hash: str | None, password: str) -> bool:
     try:
-        return _hasher.verify(password_hash or _DUMMY_HASH, password) and password_hash is not None
-    except (VerifyMismatchError, VerificationError, InvalidHashError):
+        return (
+            _hasher.verify(password_hash or _DUMMY_HASH, password)
+            and password_hash is not None
+        )
+    except VerifyMismatchError, VerificationError, InvalidHashError:
         return False
 
 
@@ -69,7 +72,9 @@ def issue_access_token(
     return AccessToken(token=token, expires_at=exp, expires_in=ttl_seconds)
 
 
-def decode_access_token(token: str, *, public_key: str, issuer: str, audience: str) -> dict:
+def decode_access_token(
+    token: str, *, public_key: str, issuer: str, audience: str
+) -> dict:
     return jwt.decode(
         token,
         public_key,

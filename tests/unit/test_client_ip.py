@@ -11,7 +11,10 @@ def test_untrusted_peer_ignores_forwarded_header():
 
 
 def test_trusted_proxy_uses_rightmost_untrusted_hop():
-    assert resolve_client_ip("10.0.0.2", "6.6.6.6, 198.51.100.7, 10.0.0.5", PROXIES) == "198.51.100.7"
+    assert (
+        resolve_client_ip("10.0.0.2", "6.6.6.6, 198.51.100.7, 10.0.0.5", PROXIES)
+        == "198.51.100.7"
+    )
 
 
 def test_trusted_proxy_without_header_or_garbage():

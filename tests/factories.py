@@ -24,13 +24,14 @@ from app.models.event import Event
 from app.models.event_session import EventSession
 from app.models.participation import Participation
 
-Window = Literal["open", "closed", "not_open"]
+Window = Literal["open", "closed", "not_open", "started"]
 
 # Registration window relative to now, in hours: opens, closes, starts, ends.
 _WINDOWS: dict[Window, tuple[int, int, int, int]] = {
     "open": (-1, 1, 2, 3),
     "closed": (-2, -1, 1, 2),
     "not_open": (1, 2, 3, 4),
+    "started": (-3, -2, -1, 1),
 }
 
 

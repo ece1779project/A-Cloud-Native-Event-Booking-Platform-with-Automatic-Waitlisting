@@ -61,7 +61,9 @@ async def test_account_and_queue_head_locks(session_factory):
         a, b = await make_account(db), await make_account(db)
 
     async with session_factory.begin() as db:
-        locked = await lock_account_scope(db, share_ids=[b.id], exclusive_ids=[a.id, b.id])
+        locked = await lock_account_scope(
+            db, share_ids=[b.id], exclusive_ids=[a.id, b.id]
+        )
         assert list(locked.accounts) == sorted([a.id, b.id])
         head = await lock_queue_head_account(db, a.id)
         assert head.account.id == a.id
@@ -87,8 +89,12 @@ async def test_store_helpers(session_factory):
     async with session_factory.begin() as db:
         scope = await lock_session_scope(db, session.id)
         held = await make_held(db, scope.session, a)
-        wb = await make_waiting(db, scope.session, b, await next_queue_seq(db, scope.session))
-        wc = await make_waiting(db, scope.session, c, await next_queue_seq(db, scope.session))
+        wb = await make_waiting(
+            db, scope.session, b, await next_queue_seq(db, scope.session)
+        )
+        wc = await make_waiting(
+            db, scope.session, c, await next_queue_seq(db, scope.session)
+        )
         assert (wb.queue_seq, wc.queue_seq) == (1, 2)
         assert await bump_version(db, scope.session) == 1
 
@@ -96,9 +102,14 @@ async def test_store_helpers(session_factory):
         cid = uuid.uuid4()
         # The factory wrote change 1 (BOOKED); the next one is numbered 2.
         change = await record_change(
-            db, participation_id=held.id, from_state=ParticipationState.HELD,
-            to_state=ParticipationState.CONFIRMED, reason_code="PAYMENT_CONFIRMED",
-            occurred_at=now, correlation_id=cid, actor_id=a.id,
+            db,
+            participation_id=held.id,
+            from_state=ParticipationState.HELD,
+            to_state=ParticipationState.CONFIRMED,
+            reason_code="PAYMENT_CONFIRMED",
+            occurred_at=now,
+            correlation_id=cid,
+            actor_id=a.id,
         )
         assert change.change_no == 2
 
