@@ -58,7 +58,12 @@ async def test_each_category_is_paired_and_the_rest_counted(session_factory, set
             request_id=uuid.uuid4(),
         )
     await ssvc.patch_session(
-        session_factory, settings, growing_owner, growing.id, SessionPatch(capacity=2)
+        session_factory,
+        settings,
+        growing_owner,
+        growing.id,
+        SessionPatch(capacity=2),
+        request_id=uuid.uuid4(),
     )  # an offer with no release
 
     report = await _report(session_factory)

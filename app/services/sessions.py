@@ -51,6 +51,12 @@ from app.services.events import (
     session_view,
     terminalize_active,
 )
+from app.services.idempotency import (
+    CommandContext,
+    CommandOutcome,
+    management_outcome,
+    run_management,
+)
 from app.services.promotion import promote_waiters
 
 Factory = async_sessionmaker[AsyncSession]
@@ -65,11 +71,17 @@ async def _lock_session(db: AsyncSession, session_id: uuid.UUID) -> LockedScope:
 
 
 async def create_session(
-    factory: Factory, actor: Account, event_id: uuid.UUID, body: SessionCreate
-) -> SessionView:
+    factory: Factory,
+    actor: Account,
+    event_id: uuid.UUID,
+    body: SessionCreate,
+    *,
+    request_id: uuid.UUID,
+) -> CommandOutcome:
     """Every new session starts as ``DRAFT``, even on a published event;
     ``POST /events/{id}/publish`` is the only route that publishes it."""
-    async with factory.begin() as db:
+
+    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
         try:
             # Exclusive event lock: no concurrent event cancellation or publication.
             scope = await lock_event_scope(db, event_id, exclusive_event=True)
@@ -83,7 +95,17 @@ async def create_session(
         db.add(session)
         await db.flush()
         await db.refresh(session)
-        return await session_view(db, session, scope.now)
+        view = await session_view(db, session, scope.now)
+        return management_outcome(view, http_status=201, session_version=view.version)
+
+    return await run_management(
+        factory,
+        actor_id=actor.id,
+        request_id=request_id,
+        operation="create_session",
+        params={"event_id": event_id, **body.model_dump(mode="json")},
+        execute=execute,
+    )
 
 
 async def _has_any_participation(db: AsyncSession, session_id: uuid.UUID) -> bool:
@@ -99,10 +121,13 @@ async def patch_session(
     actor: Account,
     session_id: uuid.UUID,
     body: SessionPatch,
-) -> tuple[SessionView, list[SessionChange]]:
+    *,
+    request_id: uuid.UUID,
+) -> CommandOutcome:
     changes = body.model_dump(exclude_unset=True)
     reject_nulls(changes)
-    async with factory.begin() as db:
+
+    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
         scope = await _lock_session(db, session_id)
         event, session, now = scope.event, scope.session, scope.now
         ensure_can_manage(actor, event, session)
@@ -155,21 +180,40 @@ async def patch_session(
                 )
             )
         view = await session_view(db, session, now)
-    return view, result
+        return management_outcome(view, session_version=view.version, changes=result)
+
+    return await run_management(
+        factory,
+        actor_id=actor.id,
+        request_id=request_id,
+        operation="patch_session",
+        params={
+            "session_id": session_id,
+            "changes": body.model_dump(mode="json", exclude_unset=True),
+        },
+        execute=execute,
+    )
 
 
 async def cancel_session(
-    factory: Factory, actor: Account, session_id: uuid.UUID, reason: str
-) -> tuple[SessionView, list[SessionChange]]:
+    factory: Factory,
+    actor: Account,
+    session_id: uuid.UUID,
+    reason: str,
+    *,
+    request_id: uuid.UUID,
+) -> CommandOutcome:
     """Mark the session cancelled, end its active attempts, bump the version
     and write one audit row, in one transaction. Never promotes."""
     correlation_id = uuid.uuid7()
-    async with factory.begin() as db:
+
+    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
         scope = await _lock_session(db, session_id)
         event, session, now = scope.event, scope.session, scope.now
         ensure_can_manage(actor, event, session)
         if session.status == PS.CANCELLED:
-            return await session_view(db, session, now), []
+            view = await session_view(db, session, now)
+            return management_outcome(view, session_version=view.version)
 
         session.status, session.cancelled_at, session.cancellation_reason = (
             PS.CANCELLED.value,
@@ -197,7 +241,16 @@ async def cancel_session(
             target_session_id=session.id,
         )
         view = await session_view(db, session, now)
-    return view, [change]
+        return management_outcome(view, session_version=view.version, changes=[change])
+
+    return await run_management(
+        factory,
+        actor_id=actor.id,
+        request_id=request_id,
+        operation="cancel_session",
+        params={"session_id": session_id, "reason": reason},
+        execute=execute,
+    )
 
 
 async def get_session(

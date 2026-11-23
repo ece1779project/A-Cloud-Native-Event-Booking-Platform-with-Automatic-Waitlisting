@@ -191,17 +191,24 @@ async def stale_worker_candidate(factory, settings) -> Changes:
 
 async def capacity_increase(factory, settings) -> Changes:
     organizer, session, *_ = await _hold_and_waiter(factory)
-    _, changes = await ssvc.patch_session(
-        factory, settings, organizer, session.id, SessionPatch(capacity=2)
+    outcome = await ssvc.patch_session(
+        factory,
+        settings,
+        organizer,
+        session.id,
+        SessionPatch(capacity=2),
+        request_id=uuid.uuid4(),
     )
-    return changes
+    return outcome.changes
 
 
 async def session_published(factory, settings) -> Changes:
     async with factory.begin() as db:
         organizer, event, _ = await make_scope(db, status=PublicationStatus.DRAFT)
-    _, changes = await esvc.publish_event(factory, organizer, event.id)
-    return changes
+    outcome = await esvc.publish_event(
+        factory, organizer, event.id, request_id=uuid.uuid4()
+    )
+    return outcome.changes
 
 
 async def event_published(factory, settings) -> Changes:
@@ -209,16 +216,18 @@ async def event_published(factory, settings) -> Changes:
         organizer, event, _ = await make_scope(db, status=PublicationStatus.DRAFT)
         await make_session(db, event, status=PublicationStatus.DRAFT)
         event.status = PublicationStatus.DRAFT.value
-    _, changes = await esvc.publish_event(factory, organizer, event.id)
-    return changes
+    outcome = await esvc.publish_event(
+        factory, organizer, event.id, request_id=uuid.uuid4()
+    )
+    return outcome.changes
 
 
 async def session_cancelled(factory, settings) -> Changes:
     organizer, session, *_ = await _hold_and_waiter(factory)
-    _, changes = await ssvc.cancel_session(
-        factory, organizer, session.id, "Room unavailable"
+    outcome = await ssvc.cancel_session(
+        factory, organizer, session.id, "Room unavailable", request_id=uuid.uuid4()
     )
-    return changes
+    return outcome.changes
 
 
 async def event_cancelled(factory, settings) -> Changes:
@@ -227,8 +236,10 @@ async def event_cancelled(factory, settings) -> Changes:
         organizer, event, session = await make_scope(db, capacity=1)
         await make_held(db, session, await make_account(db))
         await make_session(db, event)
-    _, changes = await esvc.cancel_event(factory, organizer, event.id, "Speaker ill")
-    return changes
+    outcome = await esvc.cancel_event(
+        factory, organizer, event.id, "Speaker ill", request_id=uuid.uuid4()
+    )
+    return outcome.changes
 
 
 # One row per case: the expected (cause, transition reasons) of each change.

@@ -88,18 +88,18 @@ async def published_session(client, headers, **kw) -> tuple[str, str]:
     e = (
         await client.post(
             "/api/v1/events",
-            headers=headers,
+            headers=headers | idem(),
             json={"title": "Workshop", "description": "d", "location": "Toronto"},
         )
     ).json()["data"]
     s = (
         await client.post(
             f"/api/v1/events/{e['id']}/sessions",
-            headers=headers,
+            headers=headers | idem(),
             json=session_body(**kw),
         )
     ).json()["data"]
     assert (
-        await client.post(f"/api/v1/events/{e['id']}/publish", headers=headers)
+        await client.post(f"/api/v1/events/{e['id']}/publish", headers=headers | idem())
     ).status_code == 200
     return e["id"], s["id"]

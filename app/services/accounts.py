@@ -17,8 +17,14 @@ from app.db.locks import RowMissing, lock_account_scope
 from app.domain.enums import ManagementActionType, RevokeReason, Role
 from app.models.account import Account
 from app.models.auth_session import AuthSession
-from app.schemas.accounts import AccountCreate
+from app.schemas.accounts import AccountCreate, AccountView
 from app.services.audit import record_action
+from app.services.idempotency import (
+    CommandContext,
+    CommandOutcome,
+    management_outcome,
+    run_management,
+)
 
 
 async def register(
@@ -73,14 +79,15 @@ async def admin_patch_account(
     role: Role | None,
     disabled: bool | None,
     reason: str,
-) -> Account:
+    request_id: uuid.UUID,
+) -> CommandOutcome:
     if target_id == actor.id:
         raise AppError(
             ErrorCode.FORBIDDEN, "Administrators cannot change their own account."
         )
     correlation_id = uuid.uuid7()
 
-    async with factory.begin() as db:
+    async def execute(db: AsyncSession, ctx: CommandContext) -> CommandOutcome:
         try:
             locked = await lock_account_scope(db, exclusive_ids=[target_id])
         except RowMissing as exc:
@@ -122,5 +129,21 @@ async def admin_patch_account(
         elif disabled is False and target.disabled_at is not None:
             target.disabled_at = None
             await audit(ManagementActionType.ACCOUNT_ENABLED)
+        await db.flush()
+        await db.refresh(target)
+        return management_outcome(AccountView.of(target))
+
     # TODO(realtime): publish the post-commit control invalidation (Section 9.3 step 4).
-    return target
+    return await run_management(
+        factory,
+        actor_id=actor.id,
+        request_id=request_id,
+        operation="admin_patch_account",
+        params={
+            "account_id": target_id,
+            "role": role.value if role else None,
+            "disabled": disabled,
+            "reason": reason,
+        },
+        execute=execute,
+    )

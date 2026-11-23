@@ -15,7 +15,7 @@ async def world(client, make_user):
     draft = (
         await client.post(
             "/api/v1/events",
-            headers=o1,
+            headers=o1 | idem(),
             json={"title": "Draft", "description": "d", "location": "l"},
         )
     ).json()["data"]
@@ -56,7 +56,7 @@ CASES = [
         "POST",
         "/api/v1/events",
         {"title": "t", "description": "d", "location": "l"},
-        False,
+        True,
         dict(anon=401, a1=403, a2=403, o1=201, o2=201, admin=201),
     ),
     (
@@ -64,7 +64,7 @@ CASES = [
         "PATCH",
         "/api/v1/events/{event}",
         {"location": "x"},
-        False,
+        True,
         dict(anon=401, a1=403, a2=403, o1=200, o2=403, admin=200),
     ),
     (

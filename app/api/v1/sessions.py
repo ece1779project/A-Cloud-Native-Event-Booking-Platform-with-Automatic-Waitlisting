@@ -12,8 +12,9 @@ from app.api.dependencies import (
     get_factory,
     get_optional_account,
     get_settings_dep,
+    idempotency_key,
+    management_response,
     meta,
-    publish_after_commit,
     require_manager,
 )
 from app.models.account import Account
@@ -22,8 +23,6 @@ from app.schemas.sessions import CancelRequest, RosterView, SessionPatch, Sessio
 from app.services import sessions as svc
 
 router = APIRouter(tags=["sessions"])
-
-# TODO(idempotency): PATCH and cancel need Idempotency-Key per doc/openapi.yaml.
 
 
 @router.get("/sessions/{session_id}", response_model=Envelope[SessionView])
@@ -43,12 +42,14 @@ async def patch_session(
     session_id: uuid.UUID,
     body: SessionPatch,
     actor: Account = Depends(require_manager),
+    key: uuid.UUID = Depends(idempotency_key),
     factory=Depends(get_factory),
     settings=Depends(get_settings_dep),
 ):
-    view, changes = await svc.patch_session(factory, settings, actor, session_id, body)
-    await publish_after_commit(request, changes)
-    return Envelope(data=view, meta=meta(request, session_version=view.version))
+    outcome = await svc.patch_session(
+        factory, settings, actor, session_id, body, request_id=key
+    )
+    return await management_response(request, outcome)
 
 
 @router.post("/sessions/{session_id}/cancel", response_model=Envelope[SessionView])
@@ -57,11 +58,13 @@ async def cancel_session(
     session_id: uuid.UUID,
     body: CancelRequest,
     actor: Account = Depends(require_manager),
+    key: uuid.UUID = Depends(idempotency_key),
     factory=Depends(get_factory),
 ):
-    view, changes = await svc.cancel_session(factory, actor, session_id, body.reason)
-    await publish_after_commit(request, changes)
-    return Envelope(data=view, meta=meta(request, session_version=view.version))
+    outcome = await svc.cancel_session(
+        factory, actor, session_id, body.reason, request_id=key
+    )
+    return await management_response(request, outcome)
 
 
 @router.get("/sessions/{session_id}/roster", response_model=Envelope[RosterView])
