@@ -36,8 +36,8 @@ class Settings(BaseSettings):
     trusted_proxy_cidrs: str = ""
     cors_allowed_origins: str = "http://localhost:5173"
 
-    jwt_issuer: str = "seatflow"
-    jwt_audience: str = "seatflow-api"
+    jwt_issuer: str = "ticketbooking"
+    jwt_audience: str = "ticketbooking-api"
     access_token_ttl_seconds: int = Field(default=900, gt=0)
     refresh_token_ttl_seconds: int = Field(default=604800, gt=0)
 

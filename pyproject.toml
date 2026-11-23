@@ -13,12 +13,13 @@ dependencies = [
     "pyjwt[crypto]>=2.15.1",
     "redis>=8.1.0",
     "sqlalchemy[asyncio]>=2.0,<2.1",
-    "uvicorn>=0.54.0",
+    "uvicorn[standard]>=0.54.0",
 ]
 
 [dependency-groups]
 dev = [
     "httpx2>=2.16.2",
+    "locust>=2.42.0",
     "pytest>=9.2.0",
     "pytest-asyncio>=1.5.0",
     "ruff>=0.17.5",

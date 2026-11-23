@@ -1,4 +1,4 @@
-"""SeatFlow backend package.
+"""Ticketbooking backend package.
 
 One package and one container image serve three process types, each started
 by a different command:

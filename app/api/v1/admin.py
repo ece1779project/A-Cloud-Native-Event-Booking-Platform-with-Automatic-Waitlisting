@@ -20,6 +20,7 @@ from app.api.dependencies import (
 from app.core.errors import AppError, ErrorCode
 from app.domain.enums import Role
 from app.models.account import Account
+from app.realtime.publisher import publish_auth_revoked
 from app.schemas.accounts import AccountView, AdminAccountPatch
 from app.schemas.common import (
     Envelope,
@@ -85,6 +86,12 @@ async def patch_account(
         reason=body.reason,
         request_id=key,
     )
+    if (
+        body.disabled is True
+        and not outcome.is_error
+        and outcome.payload.get("disabled") is True
+    ):
+        await publish_auth_revoked(request.app.state.redis, account_id)
     return outcome_response(request, outcome, with_result=False)
 
 

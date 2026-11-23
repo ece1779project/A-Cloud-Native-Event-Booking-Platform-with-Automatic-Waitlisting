@@ -1,0 +1,8 @@
+{
+  "type": "session.changed",
+  "event_id": "33333333-3333-4333-8333-333333333333",
+  "session_id": "22222222-2222-4222-8222-222222222222",
+  "version": 13,
+  "reason": "participation_changed",
+  "occurred_at": "2026-11-14T22:00:01Z"
+}

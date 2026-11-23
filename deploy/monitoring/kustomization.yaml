@@ -1,0 +1,25 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - kubernetes.yaml
+
+configMapGenerator:
+  - name: prometheus-config
+    files:
+      - prometheus.yml
+      - alerts.yml
+  - name: grafana-datasource
+    files:
+      - prometheus.yml=grafana/provisioning/datasources/prometheus.yml
+  - name: grafana-dashboard-provider
+    files:
+      - default.yml=grafana/provisioning/dashboards/default.yml
+  - name: grafana-dashboard
+    files:
+      - ticketbooking-overview.json=grafana/dashboards/ticketbooking-overview.json
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: ticketbooking
+      app.kubernetes.io/component: monitoring

@@ -1,0 +1,79 @@
+groups:
+  - name: ticketbooking-correctness
+    rules:
+      - alert: CapacityViolation
+        expr: capacity_violations > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: A session exceeds its configured capacity
+
+      - alert: WorkerOverdueBacklog
+        expr: worker_oldest_overdue_seconds > 30
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: Expiration work has been overdue for more than 30 seconds
+
+  - name: ticketbooking-worker-freshness
+    rules:
+      - alert: WorkerScanStale
+        expr: time() - worker_last_scan_timestamp_seconds > 30
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Worker {{ $labels.scan }} scan has stopped completing"
+
+      - alert: WorkerScanMetricsMissing
+        expr: absent(worker_last_scan_timestamp_seconds{job="worker", scan="expiry"})
+        for: 1m
+        labels:
+          severity: warning
+          scan: expiry
+        annotations:
+          summary: Worker expiry scan freshness metric is missing
+
+      - alert: WorkerScanMetricsMissing
+        expr: absent(worker_last_scan_timestamp_seconds{job="worker", scan="closure"})
+        for: 1m
+        labels:
+          severity: warning
+          scan: closure
+        annotations:
+          summary: Worker closure scan freshness metric is missing
+
+      - alert: WorkerScanMetricsMissing
+        expr: absent(worker_last_scan_timestamp_seconds{job="worker", scan="promotion"})
+        for: 1m
+        labels:
+          severity: warning
+          scan: promotion
+        annotations:
+          summary: Worker promotion scan freshness metric is missing
+
+      - alert: WorkerScanMetricsMissing
+        expr: absent(worker_last_scan_timestamp_seconds{job="worker", scan="invariant"})
+        for: 1m
+        labels:
+          severity: warning
+          scan: invariant
+        annotations:
+          summary: Worker invariant scan freshness metric is missing
+
+  - name: ticketbooking-http
+    rules:
+      - alert: UnexpectedServerErrorRatio
+        expr: |
+          (
+            sum(rate(http_requests_total{status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(http_requests_total[5m])), 1)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Unexpected HTTP 5xx ratio is above 5 percent
