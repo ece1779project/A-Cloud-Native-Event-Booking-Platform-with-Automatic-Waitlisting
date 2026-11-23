@@ -53,10 +53,16 @@ async def list_accounts(
     _admin: Account = Depends(require_admin),
     factory=Depends(get_factory),
 ):
-    rows = await accounts_service.list_accounts(factory, after_id=_cursor_id(cursor), limit=limit)
-    next_cursor = encode_cursor({"id": str(rows[limit - 1].id)}) if len(rows) > limit else None
+    rows = await accounts_service.list_accounts(
+        factory, after_id=_cursor_id(cursor), limit=limit
+    )
+    next_cursor = (
+        encode_cursor({"id": str(rows[limit - 1].id)}) if len(rows) > limit else None
+    )
     return Envelope(
-        data=Page(items=[AccountView.of(a) for a in rows[:limit]], next_cursor=next_cursor),
+        data=Page(
+            items=[AccountView.of(a) for a in rows[:limit]], next_cursor=next_cursor
+        ),
         meta=meta(request),
     )
 
@@ -105,4 +111,3 @@ async def cancel_participation(
     )
     await publish_after_commit(request, outcome.changes)
     return outcome_response(request, outcome)
-

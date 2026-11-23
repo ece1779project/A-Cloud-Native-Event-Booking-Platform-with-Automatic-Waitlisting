@@ -18,14 +18,21 @@ def test_password_roundtrip():
 
 def _issue(keys, now, ttl=900):
     return sec.issue_access_token(
-        account_id=uuid.uuid4(), now=now, private_key=keys[0],
-        issuer="seatflow", audience="seatflow-api", ttl_seconds=ttl,
+        account_id=uuid.uuid4(),
+        now=now,
+        private_key=keys[0],
+        issuer="seatflow",
+        audience="seatflow-api",
+        ttl_seconds=ttl,
     )
 
 
 def _decode(keys, token, **kw):
     return sec.decode_access_token(
-        token, public_key=keys[1], issuer=kw.get("iss", "seatflow"), audience=kw.get("aud", "seatflow-api")
+        token,
+        public_key=keys[1],
+        issuer=kw.get("iss", "seatflow"),
+        audience=kw.get("aud", "seatflow-api"),
     )
 
 

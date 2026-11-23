@@ -40,7 +40,9 @@ async def list_events(
     limit: int = Limit,
     factory=Depends(get_factory),
 ):
-    page = await svc.list_events(factory, q=q, open_only=open, cursor=cursor, limit=limit)
+    page = await svc.list_events(
+        factory, q=q, open_only=open, cursor=cursor, limit=limit
+    )
     return Envelope(data=page, meta=meta(request))
 
 
@@ -63,17 +65,23 @@ async def get_event(
     viewer: Account | None = Depends(get_optional_account),
     factory=Depends(get_factory),
 ):
-    return Envelope(data=await svc.get_event(factory, viewer, event_id), meta=meta(request))
+    return Envelope(
+        data=await svc.get_event(factory, viewer, event_id), meta=meta(request)
+    )
 
 
-@router.post("/events", status_code=status.HTTP_201_CREATED, response_model=Envelope[EventView])
+@router.post(
+    "/events", status_code=status.HTTP_201_CREATED, response_model=Envelope[EventView]
+)
 async def create_event(
     request: Request,
     body: EventCreate,
     actor: Account = Depends(require_manager),
     factory=Depends(get_factory),
 ):
-    return Envelope(data=await svc.create_event(factory, actor, body), meta=meta(request))
+    return Envelope(
+        data=await svc.create_event(factory, actor, body), meta=meta(request)
+    )
 
 
 @router.patch("/events/{event_id}", response_model=Envelope[EventView])
@@ -84,7 +92,9 @@ async def patch_event(
     actor: Account = Depends(require_manager),
     factory=Depends(get_factory),
 ):
-    return Envelope(data=await svc.patch_event(factory, actor, event_id, body), meta=meta(request))
+    return Envelope(
+        data=await svc.patch_event(factory, actor, event_id, body), meta=meta(request)
+    )
 
 
 @router.post("/events/{event_id}/publish", response_model=Envelope[EventView])

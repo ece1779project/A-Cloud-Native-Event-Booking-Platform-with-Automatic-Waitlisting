@@ -55,8 +55,13 @@ async def _count_changes(session_factory, session_id, to_state) -> int:
         return await db.scalar(
             select(func.count())
             .select_from(ParticipationChange)
-            .join(Participation, Participation.id == ParticipationChange.participation_id)
-            .where(Participation.session_id == session_id, ParticipationChange.to_state == to_state)
+            .join(
+                Participation, Participation.id == ParticipationChange.participation_id
+            )
+            .where(
+                Participation.session_id == session_id,
+                ParticipationChange.to_state == to_state,
+            )
         )
 
 
@@ -67,10 +72,15 @@ async def _scan_until_idle(
     has overdue rows or free seats with waiters."""
     stop = asyncio.Event()
     loops = [
-        asyncio.create_task(run_scan_loop(s, interval=interval, batch_size=100, stop=stop))
+        asyncio.create_task(
+            run_scan_loop(s, interval=interval, batch_size=100, stop=stop)
+        )
         for s in scans
     ]
-    expiry, promotion = ExpiryScan(session_factory, 1), PromotionScan(session_factory, 1)
+    expiry, promotion = (
+        ExpiryScan(session_factory, 1),
+        PromotionScan(session_factory, 1),
+    )
     try:
         async with asyncio.timeout(timeout):
             await asyncio.sleep(settle)
@@ -131,7 +141,9 @@ async def _pick(session_factory, settings, session_id, account, rng):
     p = {"participation_id": view.id}
     pay = on(psvc.confirm, simulation_result="success", **p)
     fail = on(psvc.confirm, simulation_result="failure", **p)
-    cancel, decline, leave = (on(c, **p) for c in (psvc.cancel, psvc.decline, psvc.leave))
+    cancel, decline, leave = (
+        on(c, **p) for c in (psvc.cancel, psvc.decline, psvc.leave)
+    )
     options = {
         S.HELD: [pay, pay, fail, cancel, None],
         S.OFFERED: [pay, decline, None],
@@ -150,22 +162,35 @@ async def _watch(session_factory, stop, seen):
 
 @pytest.mark.parametrize("round_no", range(ROUNDS))
 async def test_capacity_round(session_factory, settings, round_no):
-    short = settings.model_copy(update={"hold_validity_seconds": 2, "offer_validity_seconds": 2})
+    short = settings.model_copy(
+        update={"hold_validity_seconds": 2, "offer_validity_seconds": 2}
+    )
     async with session_factory.begin() as db:
         _, _, session = await make_scope(db, capacity=CAPACITY)
         accounts = [await make_account(db) for _ in range(CLIENTS)]
     seed = random.randrange(2**32)  # reproduces the command mix, not the interleaving
     stats, seen, stop = Counter(), [], asyncio.Event()
     background = [
-        asyncio.create_task(run_scan_loop(scan, interval=0.2, batch_size=100, stop=stop))
+        asyncio.create_task(
+            run_scan_loop(scan, interval=0.2, batch_size=100, stop=stop)
+        )
         for scan in (ExpiryScan(session_factory, 2), PromotionScan(session_factory, 2))
     ] + [asyncio.create_task(_watch(session_factory, stop, seen))]
 
     try:
-        await asyncio.gather(*(
-            _client(session_factory, short, session.id, a, random.Random(seed + i), stats)
-            for i, a in enumerate(accounts)
-        ))
+        await asyncio.gather(
+            *(
+                _client(
+                    session_factory,
+                    short,
+                    session.id,
+                    a,
+                    random.Random(seed + i),
+                    stats,
+                )
+                for i, a in enumerate(accounts)
+            )
+        )
     finally:
         stop.set()
         await asyncio.gather(*background)
@@ -178,14 +203,18 @@ async def test_capacity_round(session_factory, settings, round_no):
     async with session_factory() as db:
         duplicates = await db.scalars(
             select(Participation.account_id)
-            .where(Participation.session_id == session.id,
-                   Participation.state.in_(ACTIVE_STATES))
+            .where(
+                Participation.session_id == session.id,
+                Participation.state.in_(ACTIVE_STATES),
+            )
             .group_by(Participation.account_id)
             .having(func.count() > 1)
         )
         assert list(duplicates) == []
     assert await fifo_violations(session_factory) == []
-    assert session.id not in await PromotionScan(session_factory, 2).find_candidates(100)
+    assert session.id not in await PromotionScan(session_factory, 2).find_candidates(
+        100
+    )
 
 
 # ---- Waitlist fairness, the cases other files do not cover ----
@@ -202,8 +231,13 @@ async def test_the_queue_head_withdraws_and_the_next_waiter_gets_the_seat(
         second = await make_waiting(db, session, b, 2)
 
     for account, p, command in ((a, head, psvc.leave), (h, hold, psvc.cancel)):
-        await command(session_factory, settings, account=account, participation_id=p.id,
-                      request_id=uuid.uuid4())
+        await command(
+            session_factory,
+            settings,
+            account=account,
+            participation_id=p.id,
+            request_id=uuid.uuid4(),
+        )
 
     head, second = await reload(session_factory, [head, second])
     assert (head.state, second.state) == (S.CANCELLED, S.OFFERED)
@@ -221,7 +255,9 @@ async def test_an_expired_offer_passes_on_and_does_not_requeue(session_factory):
     offer, second = await reload(session_factory, [offer, second])
     assert (offer.state, second.state) == (S.EXPIRED, S.OFFERED)
     async with session_factory() as db:
-        rows = await db.scalars(select(Participation).where(Participation.account_id == a.id))
+        rows = await db.scalars(
+            select(Participation).where(Participation.account_id == a.id)
+        )
         assert [p.id for p in rows] == [offer.id]  # FR-07.10: no new queue entry
 
 
@@ -234,12 +270,18 @@ async def test_old_cancellation_replayed_after_a_new_booking(session_factory, se
         a = await make_account(db)
 
     def book():
-        return booking.book(session_factory, settings, account=a, session_id=session.id,
-                            request_id=uuid.uuid4())
+        return booking.book(
+            session_factory,
+            settings,
+            account=a,
+            session_id=session.id,
+            request_id=uuid.uuid4(),
+        )
 
     def cancel(p_id, key):
-        return psvc.cancel(session_factory, settings, account=a, participation_id=p_id,
-                           request_id=key)
+        return psvc.cancel(
+            session_factory, settings, account=a, participation_id=p_id, request_id=key
+        )
 
     old = await book()
     key = uuid.uuid4()
@@ -270,7 +312,9 @@ async def test_two_worker_replicas_share_a_backlog(session_factory, settings):
             await make_waiting(db, session, await make_account(db), 1)
             sessions.append(session)
 
-    replicas = build_scans(session_factory, settings) + build_scans(session_factory, settings)
+    replicas = build_scans(session_factory, settings) + build_scans(
+        session_factory, settings
+    )
     await _scan_until_idle(session_factory, replicas, interval=0.05, timeout=15)
 
     for session in sessions:
@@ -289,7 +333,9 @@ async def test_promotion_latency_meets_the_target(session_factory, settings):
     async with session_factory.begin() as db:
         _, _, session = await make_scope(db, capacity=120)
         for i in range(120):  # deadlines 1 to 8 seconds from now
-            await make_held(db, session, await make_account(db), minutes=(1 + 7 * i / 120) / 60)
+            await make_held(
+                db, session, await make_account(db), minutes=(1 + 7 * i / 120) / 60
+            )
         waiters = {}
         for seq in range(1, 241):
             account = await make_account(db)
@@ -297,13 +343,22 @@ async def test_promotion_latency_meets_the_target(session_factory, settings):
             await make_waiting(db, session, account, seq)
 
     await _scan_until_idle(
-        session_factory, [ExpiryScan(session_factory, OFFER_VALIDITY)],
-        interval=1, timeout=30, settle=8.5,
+        session_factory,
+        [ExpiryScan(session_factory, OFFER_VALIDITY)],
+        interval=1,
+        timeout=30,
+        settle=8.5,
     )
 
     async with session_factory() as db:
-        offers = list(await db.scalars(select(Participation).where(
-            Participation.session_id == session.id, Participation.state == S.OFFERED)))
+        offers = list(
+            await db.scalars(
+                select(Participation).where(
+                    Participation.session_id == session.id,
+                    Participation.state == S.OFFERED,
+                )
+            )
+        )
     assert len(offers) == 120
 
     async def release(i, p):
@@ -312,8 +367,13 @@ async def test_promotion_latency_meets_the_target(session_factory, settings):
         if i % 2:
             await psvc.decline(session_factory, settings, request_id=uuid.uuid4(), **kw)
         else:
-            await psvc.confirm(session_factory, settings, simulation_result="success",
-                               request_id=uuid.uuid4(), **kw)
+            await psvc.confirm(
+                session_factory,
+                settings,
+                simulation_result="success",
+                request_id=uuid.uuid4(),
+                **kw,
+            )
             await psvc.cancel(session_factory, settings, request_id=uuid.uuid4(), **kw)
 
     await asyncio.gather(*(release(i, p) for i, p in enumerate(offers)))

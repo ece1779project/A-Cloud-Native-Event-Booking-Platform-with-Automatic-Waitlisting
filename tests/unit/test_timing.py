@@ -21,7 +21,9 @@ def test_window_boundaries():
 
 def test_deadline_capped_by_close():
     assert allocation_deadline(T, 300, T + H) == T + timedelta(minutes=5)
-    assert allocation_deadline(T, 300, T + timedelta(minutes=2)) == T + timedelta(minutes=2)
+    assert allocation_deadline(T, 300, T + timedelta(minutes=2)) == T + timedelta(
+        minutes=2
+    )
 
 
 def test_overdue_is_inclusive():

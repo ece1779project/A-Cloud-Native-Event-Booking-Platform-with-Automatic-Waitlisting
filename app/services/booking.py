@@ -43,7 +43,9 @@ from app.services.participations import (
 Factory = async_sessionmaker[AsyncSession]
 
 
-async def _lock(db: AsyncSession, session_id: uuid.UUID, account: Account) -> LockedScope:
+async def _lock(
+    db: AsyncSession, session_id: uuid.UUID, account: Account
+) -> LockedScope:
     """Event FOR SHARE, session FOR UPDATE, account FOR SHARE, then the clock."""
     try:
         scope = await lock_session_scope(db, session_id, share_account_ids=[account.id])
@@ -74,7 +76,9 @@ async def _insert(
         correlation_id=ctx.request_id,
         actor_id=account.id,
     )
-    change = await build_session_change(db, scope, cause, [ParticipationTransition.of(p)])
+    change = await build_session_change(
+        db, scope, cause, [ParticipationTransition.of(p)]
+    )
     # 201 reaches the client only after run_command's transaction commits (FR-04.9).
     return await view_outcome(db, scope, p, status=201, code=p.state, change=change)
 
@@ -99,7 +103,9 @@ async def book(
         # 1. An existing active attempt comes back unchanged: no second seat,
         #    no change of queue order (FR-04.1, FR-06.5).
         if (p := await active_attempt(db, session.id, account.id)) is not None:
-            return await view_outcome(db, scope, p, status=200, code="EXISTING_ACTIVE_PARTICIPATION")
+            return await view_outcome(
+                db, scope, p, status=200, code="EXISTING_ACTIVE_PARTICIPATION"
+            )
 
         # 2. Published and inside the registration window, by the locked clock.
         if (code := registration_block(event, session, now)) is not None:
@@ -125,7 +131,15 @@ async def book(
                 now, settings.hold_validity_seconds, session.registration_closes_at
             ),
         )
-        return await _insert(db, scope, ctx, account, p, TransitionReason.BOOKED, ChangeCause.BOOKING_HOLD)
+        return await _insert(
+            db,
+            scope,
+            ctx,
+            account,
+            p,
+            TransitionReason.BOOKED,
+            ChangeCause.BOOKING_HOLD,
+        )
 
     return await run_command(
         factory,
@@ -155,7 +169,9 @@ async def join_waitlist(
         event, session, now = scope.event, scope.session, scope.now
 
         if (p := await active_attempt(db, session.id, account.id)) is not None:
-            return await view_outcome(db, scope, p, status=200, code="EXISTING_ACTIVE_PARTICIPATION")
+            return await view_outcome(
+                db, scope, p, status=200, code="EXISTING_ACTIVE_PARTICIPATION"
+            )
         if (code := registration_block(event, session, now)) is not None:
             return CommandOutcome.reject(code, session_version=session.version)
 
@@ -178,7 +194,13 @@ async def join_waitlist(
             created_at=now,
         )
         return await _insert(
-            db, scope, ctx, account, p, TransitionReason.ENQUEUED, ChangeCause.WAITLIST_JOIN
+            db,
+            scope,
+            ctx,
+            account,
+            p,
+            TransitionReason.ENQUEUED,
+            ChangeCause.WAITLIST_JOIN,
         )
 
     return await run_command(

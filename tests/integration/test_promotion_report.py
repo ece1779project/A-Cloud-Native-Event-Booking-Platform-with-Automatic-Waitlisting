@@ -36,7 +36,9 @@ async def test_each_category_is_paired_and_the_rest_counted(session_factory, set
 
         _, _, declining = await make_scope(db, capacity=1)
         offeree = await make_account(db)
-        offer = await make_offered(db, declining, offeree, 1)  # its own offer is unpaired
+        offer = await make_offered(
+            db, declining, offeree, 1
+        )  # its own offer is unpaired
         await make_waiting(db, declining, await make_account(db), 2)
 
         growing_owner, _, growing = await make_scope(db, capacity=1)
@@ -44,11 +46,20 @@ async def test_each_category_is_paired_and_the_rest_counted(session_factory, set
         await make_waiting(db, growing, await make_account(db), 1)
 
     await expire(session_factory, expiring.id)
-    for account, p, command in ((holder, hold, psvc.cancel), (offeree, offer, psvc.decline)):
-        await command(session_factory, settings, account=account, participation_id=p.id,
-                      request_id=uuid.uuid4())
-    await ssvc.patch_session(session_factory, settings, growing_owner, growing.id,
-                             SessionPatch(capacity=2))  # an offer with no release
+    for account, p, command in (
+        (holder, hold, psvc.cancel),
+        (offeree, offer, psvc.decline),
+    ):
+        await command(
+            session_factory,
+            settings,
+            account=account,
+            participation_id=p.id,
+            request_id=uuid.uuid4(),
+        )
+    await ssvc.patch_session(
+        session_factory, settings, growing_owner, growing.id, SessionPatch(capacity=2)
+    )  # an offer with no release
 
     report = await _report(session_factory)
 

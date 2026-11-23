@@ -28,7 +28,6 @@ def request_id_of(request: Request) -> str:
     return getattr(request.state, "request_id", None) or str(uuid.uuid4())
 
 
-
 type _Network = ipaddress.IPv4Network | ipaddress.IPv6Network
 
 

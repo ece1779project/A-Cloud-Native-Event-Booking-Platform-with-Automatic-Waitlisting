@@ -76,7 +76,9 @@ async def queue_head(db: AsyncSession, session_id: uuid.UUID) -> Participation |
     )
 
 
-async def waitlist_position(db: AsyncSession, participation: Participation) -> int | None:
+async def waitlist_position(
+    db: AsyncSession, participation: Participation
+) -> int | None:
     """1 + number of waiting rows ahead; None unless the attempt is WAITLISTED."""
     if participation.state != ParticipationState.WAITLISTED:
         return None

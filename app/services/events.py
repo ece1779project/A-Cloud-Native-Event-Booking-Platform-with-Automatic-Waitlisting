@@ -59,7 +59,9 @@ def can_manage(actor: Account | None, event: Event) -> bool:
     return actor.role == Role.ORGANIZER and event.organizer_id == actor.id
 
 
-def ensure_visible(viewer: Account | None, event: Event, session: EventSession | None = None) -> None:
+def ensure_visible(
+    viewer: Account | None, event: Event, session: EventSession | None = None
+) -> None:
     """A draft the caller cannot manage does not exist for them: 404, on
     management routes too, so a response never reveals the draft."""
     if can_manage(viewer, event):
@@ -68,7 +70,9 @@ def ensure_visible(viewer: Account | None, event: Event, session: EventSession |
         raise AppError(ErrorCode.RESOURCE_NOT_FOUND)
 
 
-def ensure_can_manage(actor: Account, event: Event, session: EventSession | None = None) -> None:
+def ensure_can_manage(
+    actor: Account, event: Event, session: EventSession | None = None
+) -> None:
     """404 for an invisible draft first, then 403 for someone else's event."""
     ensure_visible(actor, event, session)
     if not can_manage(actor, event):
@@ -87,7 +91,9 @@ def reject_nulls(changes: dict) -> None:
     nulls = sorted(k for k, v in changes.items() if v is None)
     if nulls:
         raise AppError(
-            ErrorCode.VALIDATION_ERROR, "Fields cannot be set to null.", details={"fields": nulls}
+            ErrorCode.VALIDATION_ERROR,
+            "Fields cannot be set to null.",
+            details={"fields": nulls},
         )
 
 
@@ -159,7 +165,9 @@ async def terminalize_active(
     return transitions
 
 
-async def _lock_event(db: AsyncSession, event_id: uuid.UUID, *, all_sessions: bool = False):
+async def _lock_event(
+    db: AsyncSession, event_id: uuid.UUID, *, all_sessions: bool = False
+):
     try:
         return await lock_event_scope(
             db, event_id, exclusive_event=True, all_sessions=all_sessions
@@ -171,7 +179,9 @@ async def _lock_event(db: AsyncSession, event_id: uuid.UUID, *, all_sessions: bo
 # ---- Commands ----
 
 
-async def create_event(factory: Factory, actor: Account, body: EventCreate) -> EventView:
+async def create_event(
+    factory: Factory, actor: Account, body: EventCreate
+) -> EventView:
     async with factory.begin() as db:
         # The owner is the caller, never a request field. New events are drafts.
         event = Event(organizer_id=actor.id, **body.model_dump())
@@ -224,7 +234,11 @@ async def publish_event(
                 "Publication requires at least one session whose registration has not closed.",
             )
         event.status = PS.PUBLISHED.value
-        cause = ChangeCause.EVENT_PUBLISHED if event_was_draft else ChangeCause.SESSION_PUBLISHED
+        cause = (
+            ChangeCause.EVENT_PUBLISHED
+            if event_was_draft
+            else ChangeCause.SESSION_PUBLISHED
+        )
         changes = []
         for s in valid:
             s.status = PS.PUBLISHED.value
@@ -254,7 +268,11 @@ async def cancel_event(
         for s in scope.sessions.values():
             changed = False
             if s.status != PS.CANCELLED:
-                s.status, s.cancelled_at, s.cancellation_reason = PS.CANCELLED.value, now, reason
+                s.status, s.cancelled_at, s.cancellation_reason = (
+                    PS.CANCELLED.value,
+                    now,
+                    reason,
+                )
                 changed = True
             transitions = await terminalize_active(
                 db,
@@ -266,7 +284,9 @@ async def cancel_event(
             )
             if changed or transitions:
                 changes.append(
-                    await session_change(db, s, ChangeCause.EVENT_CANCELLED, transitions)
+                    await session_change(
+                        db, s, ChangeCause.EVENT_CANCELLED, transitions
+                    )
                 )
         await record_action(
             db,
@@ -300,7 +320,10 @@ async def list_events(
     async with factory() as db:
         now = await db_now(db)
         ns = (
-            select(EventSession.event_id, func.min(EventSession.starts_at).label("next_start"))
+            select(
+                EventSession.event_id,
+                func.min(EventSession.starts_at).label("next_start"),
+            )
             .where(EventSession.status == PS.PUBLISHED, EventSession.starts_at > now)
             .group_by(EventSession.event_id)
             .subquery()
@@ -313,7 +336,10 @@ async def list_events(
         if q and q.strip():
             pat = f"%{_like_escape(q.strip())}%"
             stmt = stmt.where(
-                or_(Event.title.ilike(pat, escape="\\"), Event.description.ilike(pat, escape="\\"))
+                or_(
+                    Event.title.ilike(pat, escape="\\"),
+                    Event.description.ilike(pat, escape="\\"),
+                )
             )
         if open_only:
             stmt = stmt.where(
@@ -341,7 +367,9 @@ async def list_events(
                         ns.c.next_start.is_(None),
                     )
                 )
-        stmt = stmt.order_by(ns.c.next_start.asc().nulls_last(), Event.id).limit(limit + 1)
+        stmt = stmt.order_by(ns.c.next_start.asc().nulls_last(), Event.id).limit(
+            limit + 1
+        )
         rows = (await db.execute(stmt)).all()
 
     page = rows[:limit]
@@ -349,9 +377,14 @@ async def list_events(
     if len(rows) > limit:
         last_event, last_start = page[-1]
         next_cursor = encode_cursor(
-            {"s": last_start.isoformat() if last_start else None, "id": str(last_event.id)}
+            {
+                "s": last_start.isoformat() if last_start else None,
+                "id": str(last_event.id),
+            }
         )
-    return Page(items=[EventView.of(e, next_start=s) for e, s in page], next_cursor=next_cursor)
+    return Page(
+        items=[EventView.of(e, next_start=s) for e, s in page], next_cursor=next_cursor
+    )
 
 
 async def list_my_events(
@@ -377,11 +410,15 @@ async def list_my_events(
     next_cursor = None
     if len(rows) > limit:
         last = page[-1]
-        next_cursor = encode_cursor({"c": last.created_at.isoformat(), "id": str(last.id)})
+        next_cursor = encode_cursor(
+            {"c": last.created_at.isoformat(), "id": str(last.id)}
+        )
     return Page(items=[EventView.of(e) for e in page], next_cursor=next_cursor)
 
 
-async def get_event(factory: Factory, viewer: Account | None, event_id: uuid.UUID) -> EventView:
+async def get_event(
+    factory: Factory, viewer: Account | None, event_id: uuid.UUID
+) -> EventView:
     async with factory() as db:
         event = await db.get(Event, event_id)
         if event is None:
@@ -395,6 +432,8 @@ async def get_event(factory: Factory, viewer: Account | None, event_id: uuid.UUI
         )
         manager = can_manage(viewer, event)
         views = [
-            await session_view(db, s, now) for s in sessions if manager or s.status != PS.DRAFT
+            await session_view(db, s, now)
+            for s in sessions
+            if manager or s.status != PS.DRAFT
         ]
     return EventView.of(event, sessions=views)

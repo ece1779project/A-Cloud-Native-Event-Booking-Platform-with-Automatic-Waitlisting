@@ -36,8 +36,12 @@ async def _fifo_audit(session_factory):
 
 def _run(command, session_factory, settings, account, p, key=None, **kw):
     return command(
-        session_factory, settings, account=account, participation_id=p.id,
-        request_id=key or uuid.uuid4(), **kw,
+        session_factory,
+        settings,
+        account=account,
+        participation_id=p.id,
+        request_id=key or uuid.uuid4(),
+        **kw,
     )
 
 
@@ -81,7 +85,14 @@ async def test_decline_vs_confirm_from_two_tabs(session_factory, settings):
             await make_waiting(db, session, b, 2)
 
         confirmed, declined = await asyncio.gather(
-            _run(psvc.confirm, session_factory, settings, a, offer, simulation_result="success"),
+            _run(
+                psvc.confirm,
+                session_factory,
+                settings,
+                a,
+                offer,
+                simulation_result="success",
+            ),
             _run(psvc.decline, session_factory, settings, a, offer),
         )
 
@@ -115,7 +126,9 @@ async def test_queue_head_leaves_while_the_holder_cancels(session_factory, setti
             assert (head.state, second.state) == (S.OFFERED, S.WAITLISTED)
 
 
-async def test_concurrent_declines_offer_seats_in_queue_order(session_factory, settings):
+async def test_concurrent_declines_offer_seats_in_queue_order(
+    session_factory, settings
+):
     async with session_factory.begin() as db:
         _, _, session = await make_scope(db, capacity=5)
         offers = []
@@ -132,7 +145,9 @@ async def test_concurrent_declines_offer_seats_in_queue_order(session_factory, s
     async with session_factory() as db:
         offered = await db.scalars(
             select(Participation.queue_seq)
-            .where(Participation.session_id == session.id, Participation.state == S.OFFERED)
+            .where(
+                Participation.session_id == session.id, Participation.state == S.OFFERED
+            )
             .order_by(Participation.queue_seq)
         )
         assert list(offered) == [6, 7, 8, 9, 10]
@@ -154,7 +169,10 @@ async def test_leaves_and_joins_keep_the_queue_consistent(session_factory, setti
         *(_run(psvc.leave, session_factory, settings, a, p) for a, p in leaving),
         *(
             booking.join_waitlist(
-                session_factory, settings, account=a, session_id=session.id,
+                session_factory,
+                settings,
+                account=a,
+                session_id=session.id,
                 request_id=uuid.uuid4(),
             )
             for a in newcomers
@@ -162,8 +180,9 @@ async def test_leaves_and_joins_keep_the_queue_consistent(session_factory, setti
     )
 
     assert {r.result_code for r in results} == {"CANCELLED", "WAITLISTED"}
-    queue = [(a, p.id) for a, p in staying] + [(a, r.participation_id)
-                                               for a, r in zip(newcomers, results[20:])]
+    queue = [(a, p.id) for a, p in staying] + [
+        (a, r.participation_id) for a, r in zip(newcomers, results[20:])
+    ]
     views = [await psvc.get_participation(session_factory, a, pid) for a, pid in queue]
     positions = sorted(v.queue_position for v in views)
     assert positions == list(range(1, 31))
@@ -179,7 +198,10 @@ async def test_concurrent_decline_retries_run_once(session_factory, settings):
     key = uuid.uuid4()
 
     results = await asyncio.gather(
-        *(_run(psvc.decline, session_factory, settings, a, offer, key) for _ in range(5))
+        *(
+            _run(psvc.decline, session_factory, settings, a, offer, key)
+            for _ in range(5)
+        )
     )
 
     assert sum(not r.replayed for r in results) == 1

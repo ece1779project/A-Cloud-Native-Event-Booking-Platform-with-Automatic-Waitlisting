@@ -21,7 +21,12 @@ SCHEDULE_FIELDS = (
     "starts_at",
     "ends_at",
 )
-TIME_FIELDS = ("registration_opens_at", "registration_closes_at", "starts_at", "ends_at")
+TIME_FIELDS = (
+    "registration_opens_at",
+    "registration_closes_at",
+    "starts_at",
+    "ends_at",
+)
 MAX_CAPACITY = 100_000
 
 
@@ -36,7 +41,9 @@ def _check_zone(v: str | None) -> str | None:
     return v
 
 
-def times_in_order(opens: datetime, closes: datetime, starts: datetime, ends: datetime) -> bool:
+def times_in_order(
+    opens: datetime, closes: datetime, starts: datetime, ends: datetime
+) -> bool:
     """``opens < closes <= starts < ends``, the same rule as the ``time_order`` check."""
     return opens < closes <= starts < ends
 
@@ -62,9 +69,14 @@ class SessionCreate(StrictModel):
     @model_validator(mode="after")
     def time_order(self) -> Self:
         if not times_in_order(
-            self.registration_opens_at, self.registration_closes_at, self.starts_at, self.ends_at
+            self.registration_opens_at,
+            self.registration_closes_at,
+            self.starts_at,
+            self.ends_at,
         ):
-            raise ValueError("require registration_opens_at < registration_closes_at <= starts_at < ends_at")
+            raise ValueError(
+                "require registration_opens_at < registration_closes_at <= starts_at < ends_at"
+            )
         return self
 
 
@@ -80,7 +92,9 @@ class SessionPatch(StrictModel):
     ends_at: AwareDatetime | None = None
     capacity: int | None = Field(default=None, gt=0, le=MAX_CAPACITY)
 
-    model_config = StrictModel.model_config | {"json_schema_extra": {"minProperties": 1}}
+    model_config = StrictModel.model_config | {
+        "json_schema_extra": {"minProperties": 1}
+    }
 
     @field_validator("time_zone")
     @classmethod

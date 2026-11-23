@@ -89,8 +89,14 @@ def jwt_keys() -> tuple[str, str]:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
     k = Ed25519PrivateKey.generate()
-    private = k.private_bytes(s.Encoding.PEM, s.PrivateFormat.PKCS8, s.NoEncryption()).decode()
-    public = k.public_key().public_bytes(s.Encoding.PEM, s.PublicFormat.SubjectPublicKeyInfo).decode()
+    private = k.private_bytes(
+        s.Encoding.PEM, s.PrivateFormat.PKCS8, s.NoEncryption()
+    ).decode()
+    public = (
+        k.public_key()
+        .public_bytes(s.Encoding.PEM, s.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
     return private, public
 
 

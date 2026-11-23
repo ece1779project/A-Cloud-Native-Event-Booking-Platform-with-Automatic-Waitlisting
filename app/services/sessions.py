@@ -77,7 +77,9 @@ async def create_session(
             raise AppError(ErrorCode.RESOURCE_NOT_FOUND) from exc
         ensure_can_manage(actor, scope.event)
         ensure_not_cancelled(scope.event)
-        session = EventSession(event_id=event_id, status=PS.DRAFT.value, **body.model_dump())
+        session = EventSession(
+            event_id=event_id, status=PS.DRAFT.value, **body.model_dump()
+        )
         db.add(session)
         await db.flush()
         await db.refresh(session)
@@ -86,7 +88,9 @@ async def create_session(
 
 async def _has_any_participation(db: AsyncSession, session_id: uuid.UUID) -> bool:
     """Terminal attempts count too: anyone who ever registered froze the schedule."""
-    return await db.scalar(select(exists().where(Participation.session_id == session_id)))
+    return await db.scalar(
+        select(exists().where(Participation.session_id == session_id))
+    )
 
 
 async def patch_session(
@@ -146,7 +150,9 @@ async def patch_session(
                     correlation_id=uuid.uuid7(),
                 )
             result.append(
-                await session_change(db, session, ChangeCause.CAPACITY_CHANGED, transitions)
+                await session_change(
+                    db, session, ChangeCause.CAPACITY_CHANGED, transitions
+                )
             )
         view = await session_view(db, session, now)
     return view, result
@@ -178,7 +184,9 @@ async def cancel_session(
             correlation_id=correlation_id,
             actor_id=actor.id,
         )
-        change = await session_change(db, session, ChangeCause.SESSION_CANCELLED, transitions)
+        change = await session_change(
+            db, session, ChangeCause.SESSION_CANCELLED, transitions
+        )
         await record_action(
             db,
             actor_id=actor.id,
@@ -207,7 +215,9 @@ async def roster(factory: Factory, actor: Account, session_id: uuid.UUID) -> Ros
     """Counts and rows from one read-only ``REPEATABLE READ`` snapshot."""
     async with factory.begin() as db:
         # Must be the first statement: PostgreSQL takes the snapshot at the first query.
-        await db.execute(text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY"))
+        await db.execute(
+            text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+        )
         s = await db.get(EventSession, session_id)
         if s is None:
             raise AppError(ErrorCode.RESOURCE_NOT_FOUND)
@@ -229,7 +239,9 @@ async def roster(factory: Factory, actor: Account, session_id: uuid.UUID) -> Ros
         ).all()
         version = s.version
 
-    groups: dict[str, list[RosterEntry]] = {st: [] for st in (S.HELD, S.OFFERED, S.CONFIRMED, S.WAITLISTED)}
+    groups: dict[str, list[RosterEntry]] = {
+        st: [] for st in (S.HELD, S.OFFERED, S.CONFIRMED, S.WAITLISTED)
+    }
     position = 0
     for p, name, email in rows:
         entry = RosterEntry(
@@ -252,4 +264,3 @@ async def roster(factory: Factory, actor: Account, session_id: uuid.UUID) -> Ros
         counts=RosterCounts(**{k.lower(): len(v) for k, v in groups.items()}),
         **{k.lower(): v for k, v in groups.items()},
     )
-

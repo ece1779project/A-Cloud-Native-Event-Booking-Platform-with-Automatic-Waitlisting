@@ -35,8 +35,6 @@ from app.services.idempotency import CommandOutcome
 _bearer = HTTPBearer(auto_error=False)
 
 
-
-
 def get_settings_dep(request: Request) -> Settings:
     return request.app.state.settings
 
@@ -50,15 +48,15 @@ async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
         yield session
 
 
-def meta(request: Request, session_version: int | None = None, result: str | None = None) -> Meta:
+def meta(
+    request: Request, session_version: int | None = None, result: str | None = None
+) -> Meta:
     return Meta(
         request_id=request_id_of(request),
         server_time=datetime.now(UTC),
         session_version=session_version,
         result=result,
     )
-
-
 
 
 async def _account_from_token(request: Request, token: str) -> Account:
@@ -117,8 +115,6 @@ def require_roles(*roles: Role) -> Callable:
 
 require_manager = require_roles(Role.ORGANIZER, Role.ADMIN)
 require_admin = require_roles(Role.ADMIN)
-
-
 
 
 def _limiter(request: Request) -> RateLimiter:
@@ -205,4 +201,3 @@ async def publish_after_commit(request: Request, changes: list[SessionChange]) -
         return
     # TODO(realtime): Yifeng's app.realtime.publisher is still a stub. Once it
     # exists: await publisher.publish(request.app.state.redis, changes)
-

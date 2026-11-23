@@ -42,9 +42,7 @@ class Page[T](BaseModel):
 
 
 class StrictModel(BaseModel):
-
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-
 
 
 def encode_cursor(payload: dict[str, Any]) -> str:

@@ -91,7 +91,9 @@ async def lock_event_scope(
         raise ValueError("all_sessions requires exclusive_event")
 
     stmt = select(Event).where(Event.id == event_id)
-    stmt = stmt.with_for_update() if exclusive_event else stmt.with_for_update(read=True)
+    stmt = (
+        stmt.with_for_update() if exclusive_event else stmt.with_for_update(read=True)
+    )
     event = await db.scalar(stmt.execution_options(populate_existing=True))
     if event is None:
         raise RowMissing("events", event_id)
@@ -158,7 +160,9 @@ async def lock_account_scope(
     exclusive_ids: Iterable[uuid.UUID] = (),
 ) -> LockedAccounts:
     """Account-only changes (role, disablement): no event or session locks."""
-    accounts = await _lock_accounts(db, share_ids=share_ids, exclusive_ids=exclusive_ids)
+    accounts = await _lock_accounts(
+        db, share_ids=share_ids, exclusive_ids=exclusive_ids
+    )
     return LockedAccounts(accounts=accounts, now=await db_now(db))
 
 

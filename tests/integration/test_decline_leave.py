@@ -118,7 +118,9 @@ async def test_overdue_offer_expires_and_passes_on(session_factory, settings):
 
 
 @pytest.mark.parametrize("window", ["closed", "started"])
-async def test_overdue_offer_after_close_offers_nothing(session_factory, settings, window):
+async def test_overdue_offer_after_close_offers_nothing(
+    session_factory, settings, window
+):
     async with session_factory.begin() as db:
         _, _, session = await make_scope(db, capacity=1, window=window)
         a, b = await make_account(db), await make_account(db)
@@ -158,7 +160,11 @@ async def test_declined_attendee_rejoins_at_the_tail(session_factory, settings):
     await _run(psvc.decline, session_factory, settings, a, offer)
 
     rejoined = await booking.join_waitlist(
-        session_factory, settings, account=a, session_id=session.id, request_id=uuid.uuid4()
+        session_factory,
+        settings,
+        account=a,
+        session_id=session.id,
+        request_id=uuid.uuid4(),
     )
 
     assert (rejoined.http_status, rejoined.result_code) == (201, "WAITLISTED")
@@ -180,7 +186,10 @@ async def test_leave_withdraws_and_promotes_nobody(session_factory, settings):
 
     outcome = await _run(psvc.leave, session_factory, settings, a, entry)
 
-    assert (outcome.http_status, outcome.payload["end_reason"]) == (200, EndReason.WITHDRAWN)
+    assert (outcome.http_status, outcome.payload["end_reason"]) == (
+        200,
+        EndReason.WITHDRAWN,
+    )
     assert _reasons(outcome) == ["cancelled"]
     assert (await latest_history(session_factory, entry.id)).actor_id == a.id
     assert await session_version(session_factory, session.id) == before + 1
@@ -200,18 +209,28 @@ async def test_leave_and_rejoin_goes_to_the_tail(session_factory, settings):
     await _run(psvc.leave, session_factory, settings, a, entry)
 
     rejoined = await booking.join_waitlist(
-        session_factory, settings, account=a, session_id=session.id, request_id=uuid.uuid4()
+        session_factory,
+        settings,
+        account=a,
+        session_id=session.id,
+        request_id=uuid.uuid4(),
     )
 
     assert rejoined.payload["queue_position"] == 2
     mine = await psvc.my_participation(session_factory, a, session.id)
     assert (mine.id, mine.state) == (rejoined.participation_id, S.WAITLISTED)
     old = await psvc.get_participation(session_factory, a, entry.id)
-    assert (old.state, old.end_reason, old.historical) == (S.CANCELLED, "WITHDRAWN", True)
+    assert (old.state, old.end_reason, old.historical) == (
+        S.CANCELLED,
+        "WITHDRAWN",
+        True,
+    )
 
 
 @pytest.mark.parametrize("window", ["closed", "started"])
-async def test_leave_after_close_meets_the_closed_entry(session_factory, settings, window):
+async def test_leave_after_close_meets_the_closed_entry(
+    session_factory, settings, window
+):
     async with session_factory.begin() as db:
         _, _, session = await make_scope(db, capacity=1, window=window)
         a = await make_account(db)
@@ -224,7 +243,10 @@ async def test_leave_after_close_meets_the_closed_entry(session_factory, setting
     assert (outcome.http_status, outcome.result_code) == (409, "REGISTRATION_CLOSED")
     assert await session_version(session_factory, session.id) == before + 1
     (entry,) = await reload(session_factory, [entry])
-    assert (entry.state, entry.end_reason) == (S.CANCELLED, EndReason.REGISTRATION_CLOSED)
+    assert (entry.state, entry.end_reason) == (
+        S.CANCELLED,
+        EndReason.REGISTRATION_CLOSED,
+    )
     assert (await latest_history(session_factory, entry.id)).actor_id is None
     async with session_factory() as db:
         assert (await find_receipt(db, a.id, key)).http_status == 409
@@ -238,7 +260,9 @@ LEAVE = (psvc.leave, lambda db, s, a: make_waiting(db, s, a, 1))
 
 
 @pytest.mark.parametrize("command,make", [DECLINE, LEAVE], ids=["decline", "leave"])
-async def test_repeat_returns_the_unchanged_result(session_factory, settings, command, make):
+async def test_repeat_returns_the_unchanged_result(
+    session_factory, settings, command, make
+):
     async with session_factory.begin() as db:
         _, _, session = await make_scope(db, capacity=1)
         a = await make_account(db)
@@ -250,7 +274,11 @@ async def test_repeat_returns_the_unchanged_result(session_factory, settings, co
     again = await _run(command, session_factory, settings, a, p)
     replayed = await _run(command, session_factory, settings, a, p, key)
 
-    assert (again.http_status, again.result_code, again.changes) == (200, "CANCELLED", [])
+    assert (again.http_status, again.result_code, again.changes) == (
+        200,
+        "CANCELLED",
+        [],
+    )
     assert await session_version(session_factory, session.id) == version
     assert replayed.replayed and replayed.payload == first.payload
 
@@ -265,10 +293,18 @@ async def test_repeat_returns_the_unchanged_result(session_factory, settings, co
         (psvc.leave, make_confirmed),
         (psvc.leave, lambda db, s, a: make_offered(db, s, a, 1)),
     ],
-    ids=["decline-held", "decline-confirmed", "decline-waiting",
-         "leave-held", "leave-confirmed", "leave-offered"],
+    ids=[
+        "decline-held",
+        "decline-confirmed",
+        "decline-waiting",
+        "leave-held",
+        "leave-confirmed",
+        "leave-offered",
+    ],
 )
-async def test_wrong_state_is_409_and_changes_nothing(session_factory, settings, command, make):
+async def test_wrong_state_is_409_and_changes_nothing(
+    session_factory, settings, command, make
+):
     async with session_factory.begin() as db:
         _, _, session = await make_scope(db, capacity=1)
         a = await make_account(db)
@@ -277,7 +313,10 @@ async def test_wrong_state_is_409_and_changes_nothing(session_factory, settings,
 
     outcome = await _run(command, session_factory, settings, a, p)
 
-    assert (outcome.http_status, outcome.result_code) == (409, "INVALID_STATE_TRANSITION")
+    assert (outcome.http_status, outcome.result_code) == (
+        409,
+        "INVALID_STATE_TRANSITION",
+    )
     assert await session_version(session_factory, session.id) == before
     (after,) = await reload(session_factory, [p])
     assert (after.state, after.deadline_at) == (p.state, p.deadline_at)
@@ -295,7 +334,11 @@ async def _admin_cancel(session_factory, settings, organizer, event, session, p)
     async with session_factory.begin() as db:
         admin = await make_account(db, role=Role.ADMIN)
     await psvc.admin_cancel(
-        session_factory, settings, admin=admin, participation_id=p.id, reason="Duplicate",
+        session_factory,
+        settings,
+        admin=admin,
+        participation_id=p.id,
+        reason="Duplicate",
         request_id=uuid.uuid4(),
     )
 
@@ -374,14 +417,22 @@ async def test_admin_cancel_repeats_but_does_not_take_over_a_user_cancel(
 
     async def admin_cancel(p):
         return await psvc.admin_cancel(
-            session_factory, settings, admin=admin, participation_id=p.id,
-            reason="Duplicate", request_id=uuid.uuid4(),
+            session_factory,
+            settings,
+            admin=admin,
+            participation_id=p.id,
+            reason="Duplicate",
+            request_id=uuid.uuid4(),
         )
 
     first, again = await admin_cancel(mine), await admin_cancel(mine)
     await _run(psvc.cancel, session_factory, settings, b, theirs)
 
-    assert (first.result_code, again.result_code, again.changes) == ("CANCELLED", "CANCELLED", [])
+    assert (first.result_code, again.result_code, again.changes) == (
+        "CANCELLED",
+        "CANCELLED",
+        [],
+    )
     assert (await admin_cancel(theirs)).result_code == "INVALID_STATE_TRANSITION"
     async with session_factory() as db:
         assert await db.scalar(select(func.count()).select_from(ManagementAction)) == 1
@@ -398,15 +449,21 @@ async def _offer_over_http(client, make_user):
     _, holder = await make_user()
     _, waiter = await make_user()
     _, behind = await make_user()
-    held = (await client.post(f"/api/v1/sessions/{sid}/book", headers=holder | idem())).json()["data"]
+    held = (
+        await client.post(f"/api/v1/sessions/{sid}/book", headers=holder | idem())
+    ).json()["data"]
     for h in (waiter, behind):
         await client.post(f"/api/v1/sessions/{sid}/waitlist", headers=h | idem())
-    await client.post(f"/api/v1/participations/{held['id']}/cancel", headers=holder | idem())
+    await client.post(
+        f"/api/v1/participations/{held['id']}/cancel", headers=holder | idem()
+    )
     return sid, waiter, behind
 
 
 async def _mine(client, sid, h) -> dict:
-    return (await client.get(f"/api/v1/sessions/{sid}/my-participation", headers=h)).json()["data"]
+    return (
+        await client.get(f"/api/v1/sessions/{sid}/my-participation", headers=h)
+    ).json()["data"]
 
 
 async def test_decline_over_http(client, make_user):
@@ -414,14 +471,21 @@ async def test_decline_over_http(client, make_user):
     offer = await _mine(client, sid, waiter)
     key = idem()
 
-    r = await client.post(f"/api/v1/participations/{offer['id']}/decline", headers=waiter | key)
+    r = await client.post(
+        f"/api/v1/participations/{offer['id']}/decline", headers=waiter | key
+    )
 
     assert r.status_code == 200
     body = r.json()
-    assert (body["meta"]["result"], body["data"]["end_reason"]) == ("CANCELLED", "OFFER_DECLINED")
+    assert (body["meta"]["result"], body["data"]["end_reason"]) == (
+        "CANCELLED",
+        "OFFER_DECLINED",
+    )
     assert body["meta"]["session_version"] == body["data"]["version"]
     assert (await _mine(client, sid, behind))["state"] == "OFFERED"
-    stored = await client.get(f"/api/v1/requests/{key['Idempotency-Key']}", headers=waiter)
+    stored = await client.get(
+        f"/api/v1/requests/{key['Idempotency-Key']}", headers=waiter
+    )
     assert stored.json()["data"] == body["data"]
 
 
@@ -431,7 +495,9 @@ async def test_leave_and_rejoin_over_http(client, make_user):
     await client.post(f"/api/v1/sessions/{sid}/waitlist", headers=last | idem())
     entry = await _mine(client, sid, behind)
 
-    r = await client.post(f"/api/v1/participations/{entry['id']}/leave", headers=behind | idem())
+    r = await client.post(
+        f"/api/v1/participations/{entry['id']}/leave", headers=behind | idem()
+    )
     assert (r.status_code, r.json()["data"]["end_reason"]) == (200, "WITHDRAWN")
     assert (await _mine(client, sid, last))["queue_position"] == 1
 
@@ -446,4 +512,6 @@ async def test_http_validation(client, make_user, command):
 
     assert (await client.post(url, headers=waiter)).status_code == 422
     assert (await client.post(url, headers=idem())).status_code == 401
-    assert (await client.post(url, headers=waiter | idem(), json={"x": 1})).status_code == 422
+    assert (
+        await client.post(url, headers=waiter | idem(), json={"x": 1})
+    ).status_code == 422

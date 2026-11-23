@@ -37,7 +37,9 @@ class Participation(Base):
     __tablename__ = "participations"
     __table_args__ = (
         CheckConstraint(f"state IN {ALL_STATES_SQL}", name="state_valid"),
-        CheckConstraint("queue_seq IS NULL OR queue_seq > 0", name="queue_seq_positive"),
+        CheckConstraint(
+            "queue_seq IS NULL OR queue_seq > 0", name="queue_seq_positive"
+        ),
         CheckConstraint(
             "state NOT IN ('WAITLISTED', 'OFFERED') OR queue_seq IS NOT NULL",
             name="queued_has_seq",

@@ -41,7 +41,12 @@ Changes = list[SessionChange]
 
 async def _command(command, factory, settings, account, p, **kw) -> Changes:
     outcome = await command(
-        factory, settings, account=account, participation_id=p.id, request_id=uuid.uuid4(), **kw
+        factory,
+        settings,
+        account=account,
+        participation_id=p.id,
+        request_id=uuid.uuid4(),
+        **kw,
     )
     return outcome.changes
 
@@ -135,8 +140,12 @@ async def admin_cancel(factory, settings) -> Changes:
         await make_waiting(db, session, await make_account(db), 1)
         admin = await make_account(db, role=Role.ADMIN)
     outcome = await psvc.admin_cancel(
-        factory, settings, admin=admin, participation_id=booked.id,
-        reason="Duplicate registration", request_id=uuid.uuid4(),
+        factory,
+        settings,
+        admin=admin,
+        participation_id=booked.id,
+        reason="Duplicate registration",
+        request_id=uuid.uuid4(),
     )
     return outcome.changes
 
@@ -206,7 +215,9 @@ async def event_published(factory, settings) -> Changes:
 
 async def session_cancelled(factory, settings) -> Changes:
     organizer, session, *_ = await _hold_and_waiter(factory)
-    _, changes = await ssvc.cancel_session(factory, organizer, session.id, "Room unavailable")
+    _, changes = await ssvc.cancel_session(
+        factory, organizer, session.id, "Room unavailable"
+    )
     return changes
 
 
@@ -228,13 +239,19 @@ CASES = [
     (payment_failure, []),
     (overdue_confirmation, [(C.CONFIRMATION, ["expired", "offer_created"])]),
     (cancel, [(C.ATTENDEE_RELEASE, ["cancelled", "offer_created"])]),
-    (cancel_past_a_disabled_head, [(C.ATTENDEE_RELEASE, ["cancelled", "cancelled", "offer_created"])]),
+    (
+        cancel_past_a_disabled_head,
+        [(C.ATTENDEE_RELEASE, ["cancelled", "cancelled", "offer_created"])],
+    ),
     (decline, [(C.ATTENDEE_RELEASE, ["cancelled", "offer_created"])]),
     (leave, [(C.ATTENDEE_RELEASE, ["cancelled"])]),
     (admin_cancel, [(C.ADMIN_PARTICIPATION_CANCEL, ["cancelled", "offer_created"])]),
     (expiration, [(C.EXPIRATION, ["expired", "offer_created"])]),
     # Hold first, then offer and waiter in queue order; the confirmed row stays.
-    (registration_closed, [(C.REGISTRATION_CLOSED, ["expired", "expired", "cancelled"])]),
+    (
+        registration_closed,
+        [(C.REGISTRATION_CLOSED, ["expired", "expired", "cancelled"])],
+    ),
     (promotion_scan, [(C.PROMOTION, ["offer_created"])]),
     (stale_worker_candidate, []),
     (capacity_increase, [(C.CAPACITY_CHANGED, ["offer_created"])]),
@@ -245,19 +262,29 @@ CASES = [
 ]
 
 
-@pytest.mark.parametrize(("scenario", "expected"), CASES, ids=[c[0].__name__ for c in CASES])
+@pytest.mark.parametrize(
+    ("scenario", "expected"), CASES, ids=[c[0].__name__ for c in CASES]
+)
 async def test_session_changes_follow_the_publication_matrix(
     session_factory, settings, scenario, expected
 ):
     changes = await scenario(session_factory, settings)
 
     # Sorted only across sessions: the order of transitions inside a change matters.
-    assert sorted((c.cause, [t.reason for t in c.transitions]) for c in changes) == sorted(expected)
+    assert sorted(
+        (c.cause, [t.reason for t in c.transitions]) for c in changes
+    ) == sorted(expected)
 
     # Every factory session starts at version 0. Each session the operation
     # advanced has exactly one change, carrying its committed version 1.
     async with session_factory() as db:
-        rows = (await db.execute(select(EventSession.event_id, EventSession.id, EventSession.version))).all()
-    bumped = sorted((event_id, session_id, v) for event_id, session_id, v in rows if v != 0)
+        rows = (
+            await db.execute(
+                select(EventSession.event_id, EventSession.id, EventSession.version)
+            )
+        ).all()
+    bumped = sorted(
+        (event_id, session_id, v) for event_id, session_id, v in rows if v != 0
+    )
     assert sorted((c.event_id, c.session_id, c.version) for c in changes) == bumped
     assert all(c.version == 1 for c in changes)

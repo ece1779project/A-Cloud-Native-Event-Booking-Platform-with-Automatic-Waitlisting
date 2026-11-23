@@ -77,18 +77,29 @@ async def promotion_latencies(
         return stmt
 
     releases = await db.execute(
-        scoped(select(change.correlation_id, change.reason_code, change.occurred_at, p.deadline_at))
-        .where(change.from_state.in_(OCCUPYING_STATES), change.reason_code.in_(CATEGORY))
+        scoped(
+            select(
+                change.correlation_id,
+                change.reason_code,
+                change.occurred_at,
+                p.deadline_at,
+            )
+        ).where(
+            change.from_state.in_(OCCUPYING_STATES), change.reason_code.in_(CATEGORY)
+        )
     )
     offers = await db.execute(
-        scoped(select(change.correlation_id, change.occurred_at, p.queue_seq))
-        .where(change.to_state == ParticipationState.OFFERED)
+        scoped(select(change.correlation_id, change.occurred_at, p.queue_seq)).where(
+            change.to_state == ParticipationState.OFFERED
+        )
     )
 
     freed: dict[uuid.UUID, list[tuple[datetime, str]]] = defaultdict(list)
     for cid, reason, occurred_at, deadline_at in releases:
         category = CATEGORY[reason]
-        freed[cid].append((deadline_at if category == "expiration" else occurred_at, category))
+        freed[cid].append(
+            (deadline_at if category == "expiration" else occurred_at, category)
+        )
     offered: dict[uuid.UUID, list[tuple[int, datetime]]] = defaultdict(list)
     for cid, occurred_at, queue_seq in offers:
         offered[cid].append((queue_seq, occurred_at))
@@ -131,7 +142,9 @@ async def main(argv: list[str] | None = None) -> int:
     engine = create_engine(get_settings())
     try:
         async with create_session_factory(engine)() as db:
-            report = await promotion_latencies(db, since=args.since, session_id=args.session)
+            report = await promotion_latencies(
+                db, since=args.since, session_id=args.session
+            )
     finally:
         await engine.dispose()
     print(format_report(report))
