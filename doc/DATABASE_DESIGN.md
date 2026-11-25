@@ -1,22 +1,10 @@
 # Database design specification
 
 Cloud-Native Event Booking Platform with Automatic Waitlisting  
-Design version 1.6 · 22 November 2026 · Proposed schema for PRD 1.2  
+Design version 1.6 · 22 November 2026 · Schema for the first release  
 Requirements source: [Product requirements document](PRD.md) · Implementation design: [Technical design document](TECHNICAL_DESIGN.md)
 
 Terms follow the PRD's terminology table. "Session" always means an event session. A SQLAlchemy session is written `AsyncSession`. Attendees cancel a hold or confirmed booking, decline an offer and leave the waitlist; all three end in `CANCELLED`.
-
-Changes in 1.6: cancel, decline and leave accept only their own states, and a repeated command returns the unchanged result only when its own end reason is recorded (section 4).
-
-Changes in 1.5: `INELIGIBLE` is reserved, because an enabled account is the only eligibility rule in this release (section 4).
-
-Changes in 1.4: the session version is incremented once per transaction by its owner; system transitions record a null `actor_id`; disabled waiters end with `ACCOUNT_DISABLED`; overdue attempts of one session expire in one transaction (sections 2.4 and 4).
-
-Changes in 1.3: section 2.6 documents the database triggers that the second migration added.
-
-Changes in 1.2: section 2.5 adds the `auth_sessions` table for refresh tokens, previously described only in Section 6.2 of the technical design.
-
-Changes in 1.1: sessions carry a `version` column; a transaction that frees a seat promotes the queue head itself; all writers share one locking entry point and lock timeouts; registration writes continue during a Redis outage; the command rules are numbered steps with a SQL sketch.
 
 ## 1. Storage model
 

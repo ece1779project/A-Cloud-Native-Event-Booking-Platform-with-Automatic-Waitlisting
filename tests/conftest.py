@@ -81,10 +81,9 @@ def session_factory(engine):
     return create_session_factory(engine)
 
 
-# ---- Chapter 02: Ed25519 key pair generated per run, so tests need no .env ----
+# Ed25519 key pair generated per run, so tests need no .env.
 @pytest.fixture(scope="session")
 def jwt_keys() -> tuple[str, str]:
-    # Imported here so the rest of the suite runs before chapter 02 adds the dependency.
     from cryptography.hazmat.primitives import serialization as s
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
@@ -100,7 +99,7 @@ def jwt_keys() -> tuple[str, str]:
     return private, public
 
 
-# ---- Chapters 03 and 09: settings shared by integration and concurrency tests ----
+# Settings shared by integration and concurrency tests.
 @pytest.fixture
 def settings(database_url, jwt_keys) -> Settings:
     # Ignore .env, so local demo values (e.g. short validity) never reach the tests.

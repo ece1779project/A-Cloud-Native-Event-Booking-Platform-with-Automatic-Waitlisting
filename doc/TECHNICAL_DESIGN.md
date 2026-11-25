@@ -2,46 +2,21 @@
 
 Version: 1.6  
 Date: 2026-11-22  
-Status: Proposed target design; implementation pending
-
-Changes in 1.6: management commands (event, session and administrator account) now require `Idempotency-Key` and store a receipt; only a success is stored, a rejection rolls back and leaves the key unused (Section 7.5). `app.cli.export_openapi` is implemented. `INTERNAL_ERROR` (`500`) is listed for unexpected failures (Section 8.5). Section 2 lists the completed account, management and booking work.
-
-Changes in 1.5: decline and leave are implemented on the shared cancel path. A command on an ended attempt returns `200` unchanged only when its own end reason is recorded, and a command never turns into another (Sections 7.3 and 8.4). The promotion latency report and the in-process acceptance tests are added (Sections 2, 5, 5.1 and 15). Compose passes `.env` to the API and the worker (Section 13.1). Three accepted limitations are added (Section 18).
-
-Changes in 1.4: an enabled account is the only eligibility rule in this release, so `INELIGIBLE` is reserved and unused (Section 7.4).
-
-Changes in 1.3: the transaction owner increments the session version once, after every step and before commit (Sections 6.3 and 7). Commands on an existing participation first apply `expire_if_overdue` and `end_waiting_if_closed`, and the operations that run `promote_waiters` are listed (Sections 7.3 and 7.4). System transitions record a null `actor_id`, disabled waiters end as `CANCELLED` with `ACCOUNT_DISABLED`, and all overdue attempts of one session are handled in one transaction (Sections 7.4 and 11).
-
-Changes in 1.2: a command that advances a session version returns `SessionChange`, and the publisher accepts that value after commit (Sections 5.2 and 10.3). The worker process serves health and metrics on `WORKER_METRICS_PORT`, and a gauge records the last completed scan (Sections 13.3, 13.5, and 14).
-
-Changes in 1.1: aligned with the draft contract in [openapi.yaml](openapi.yaml). Management commands require `Idempotency-Key`; new codes `EMAIL_ALREADY_REGISTERED` and `SCHEDULE_FROZEN`; event publication also publishes sessions added later; `GET /me/events` lists manageable events; hidden drafts return 404 on management routes; event titles stay editable after publication; administrators cannot grant `ADMIN`; WebSocket ticket scopes are named (Section 10.5).
+Status: Design of the first release
 
 ## 1. Purpose
 
-This document describes the planned technical implementation of the cloud-native event booking platform. It covers the system architecture, service responsibilities, data and concurrency model, API and real-time communication, security, deployment, observability, and delivery sequence.
+This document describes how the cloud-native event booking platform is built. It covers the system architecture, service responsibilities, data and concurrency model, API and real-time communication, security, deployment, observability, and tests.
 
 The design is based on [Project_Proposal.md](Project_Proposal.md), [PRD.md](PRD.md), and [DATABASE_DESIGN.md](DATABASE_DESIGN.md). PostgreSQL remains the source of truth for booking state, while Redis supports rate limiting and real-time delivery without becoming part of the core correctness boundary.
 
 Requirement identifiers such as FR-04 and NFR-01 refer to the PRD.
 
-## 2. Implementation status
+## 2. What the system does
 
-The following work remains to be implemented:
+An attendee browses published events, holds one seat per session, and confirms it. A full session offers a first-come-first-served waitlist. Workers expire overdue holds and offers, close registration, and promote the earliest eligible waiter when a seat is free. Organizers manage events and sessions. Administrators manage accounts.
 
-- Post-commit notifications: the routes and services hand `SessionChange` values to `publish_after_commit`, which publishes nothing until `app.realtime.publisher` exists.
-- WebSocket gateway, real-time ticket issuance (`POST /realtime/tickets`) and frontend.
-- The worker's health and metrics server on `WORKER_METRICS_PORT`.
-- Kubernetes manifests, migration jobs, monitoring, dashboards, alerts, or load tests.
-
-The package skeleton in Section 5 is in place: every module exists with a statement of its responsibility. The database layer is implemented and tested: settings, the engine, the SQLAlchemy models, both Alembic revisions, the lock entry point, the participation store, and the `/health/live` and `/health/ready` endpoints. Compose runs the migration before it starts the API.
-
-Promotion and expiration are implemented and tested: the steps in `services/promotion.py` and `services/expiration.py` (Sections 7.3 and 7.4), the `SessionChange` result in `schemas/realtime.py` (Section 10.3), the four worker scans with their loop, shutdown and metrics (Sections 11 and 14), and a `worker` service in Compose. Workers publish nothing until the publisher exists.
-
-Accounts and the API are implemented and tested: registration, login with refresh rotation and logout, the current account, role checks, administrator account changes and the bootstrap command (Sections 8.2 and 9); Redis write rate limiting with the per-replica fallback; event and session management with publication, schedule freeze, capacity changes and cancellation (Section 8.3); booking, waitlist join, confirmation, cancellation, administrator cancellation and the stored-result lookup (Sections 7.2, 7.3 and 8.4). Every authenticated business command, attendee and management alike, requires `Idempotency-Key` and stores its receipt in the transaction with its effects (Section 7.5); `python -m app.cli.export_openapi` writes the generated contract (Section 8.1).
-
-Decline and leave are implemented and tested. They share one release command with attendee cancel (Section 7.3). `python -m app.cli.promotion_report` measures promotion latency offline from `participation_changes` (Section 14). `tests/concurrency/test_acceptance.py` runs the PRD capacity rounds and the other joint validation scenarios in process (Section 15); the HTTP load test waits for the deployment.
-
-The remaining sections describe planned behavior rather than completed or measured results.
+PostgreSQL is the authority for seats, queue order, and deadlines. Redis applies rate limits and carries refresh signals after commit. The browser refetches from the REST API. The same image runs as the API, the WebSocket gateway, and the worker. Compose runs the local stack. The manifests under `deploy/kubernetes/` target minikube and DigitalOcean Kubernetes.
 
 ## 3. Goals, constraints, and decisions
 
@@ -173,7 +148,7 @@ flowchart LR
 
 ## 5. Repository structure
 
-The API, workers, and WebSocket gateway share one Python package and image. Different container commands start different process types. Each module carries a docstring that states its responsibility and the section of this document it implements. Section 2 lists which modules are implemented; the others are still skeletons.
+The API, workers, and WebSocket gateway share one Python package and image. Different container commands start different process types. Each module carries a docstring that states its responsibility and the section of this document it implements.
 
 ```text
 .
@@ -261,7 +236,7 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 │       └── promotion_report.py       # Promotion latency from history (Section 14)
 ├── migrations/                       # Alembic environment and revisions
 ├── alembic.ini
-├── frontend/                         # Created by the Vite scaffold in Phase 4
+├── frontend/                         # React application
 │   ├── src/
 │   │   ├── api/
 │   │   ├── auth/
@@ -291,8 +266,6 @@ The API, workers, and WebSocket gateway share one Python package and image. Diff
 ├── Dockerfile
 └── pyproject.toml
 ```
-
-`frontend/` is absent until the Vite scaffold runs, because that generator expects an empty target directory.
 
 ### 5.1 Process entry points
 
@@ -1032,7 +1005,7 @@ Messages are published in the order public, private, then management. Each publi
 
 **Single source in code**
 
-Phase 1 implements this section once, and no other module spells out a Redis name or message body by hand:
+Redis names and message bodies are defined once:
 
 - `app/core/redis_keys.py` holds one function per key and channel in the tables above.
 - `app/schemas/realtime.py` holds one Pydantic model per message type, one enum per `reason` list in Section 10.1, and the `SessionChange` result from Section 10.3. Contract fixtures cover the WebSocket messages only.
@@ -1287,56 +1260,9 @@ The suite runs after a clean `uv sync` on Python 3.14, pinned in `.python-versio
 
 Detailed scenarios and target values remain defined in PRD Section 2 and the acceptance cases in `DATABASE_DESIGN.md`. Test reports record the environment and mark each result as passed, failed, or not executed.
 
-## 16. Delivery sequence
+## 16. Traceability summary
 
-### Phase 1: contracts and persistence
-
-- Add backend dependencies, settings, structured errors, logging, metrics, and test infrastructure.
-- Implement SQLAlchemy models including `auth_sessions`.
-- Create and verify the first Alembic migration.
-- Freeze OpenAPI envelopes, stable codes, and WebSocket event schemas.
-- Implement the Redis names, message models, and contract fixtures listed at the end of Section 10.5, and the settings in Section 13.5.
-- Extend Compose with explicit migration and component commands.
-
-Exit condition: migrations apply to a clean database, schema invariants are tested, and contracts are reviewable.
-
-### Phase 2: identity and management foundation
-
-- Implement registration, login, refresh rotation, logout, account loading, RBAC, and bootstrap administration.
-- Implement event and session CRUD, ownership, publication, capacity editing, and audit actions.
-- Add authorization matrix and token security tests.
-
-Exit condition: FR-01 through FR-03 management and access cases pass.
-
-### Phase 3: booking and waitlist correctness
-
-- Implement the common lock entry point and idempotency receipts.
-- Implement booking, waitlist, confirmation, cancellation, capacity promotion, and history.
-- Implement scanner workers for expiry, closure, promotion, and invariant checks.
-- Complete PostgreSQL concurrency tests before adding real-time behavior.
-
-Exit condition: FR-04 through FR-08 and FR-10 correctness tests pass with zero invariant violations.
-
-### Phase 4: frontend and real-time recovery
-
-- Build the four React page types and generated API client.
-- Add Redis rate limiting, post-commit invalidation, WebSocket tickets, gateway subscriptions, polling, and reconciliation.
-- Test dropped and out-of-order messages and gateway restarts.
-
-Exit condition: FR-09 and FR-11 pass without making Redis authoritative.
-
-### Phase 5: Kubernetes, monitoring, and evaluation
-
-- Add minikube and DOKS resources, migration Job, Gateway API routes, TLS, Secrets, PVCs, probes, and network policies.
-- Add Prometheus, Grafana, dashboards, alerts, and HPA.
-- Run persistence, outage, load, scaling, and final demonstration scenarios.
-- State in the final report that this release replaced the proposal's outbox/Redis Streams pipeline with database scanning and its ingress with the DOKS-managed Gateway API.
-
-Exit condition: NFR-01 through NFR-03 and the PRD success metrics have recorded evidence.
-
-## 17. Traceability summary
-
-- FR-01 to FR-03: Sections 8, 9, and 16.
+- FR-01 to FR-03: Sections 8 and 9.
 - FR-04 to FR-08: Sections 6, 7, 8, and 11.
 - FR-09: Section 10.
 - FR-10: Sections 7.5, 8, and 9.
@@ -1345,18 +1271,7 @@ Exit condition: NFR-01 through NFR-03 and the PRD success metrics have recorded 
 - NFR-02: Sections 13.4, 14, and 15.
 - NFR-03: Sections 6 through 9.
 
-## 18. Open deployment inputs and accepted limitations
-
-The architecture is implementable locally without these values, but cloud release still requires:
-
-- Project lead, test executor, deployment maintainer, and implementation ownership.
-- DigitalOcean budget and quota.
-- DOKS node and volume sizes.
-- Public domain and certificate arrangement.
-- Final connection-pool values derived from the chosen resources.
-- Actual acceptance and demonstration dates.
-
-Accepted first-release limitations:
+## 17. Accepted limitations
 
 - One PostgreSQL instance is a single point of failure.
 - PVCs provide persistence, not backup or disaster recovery.
