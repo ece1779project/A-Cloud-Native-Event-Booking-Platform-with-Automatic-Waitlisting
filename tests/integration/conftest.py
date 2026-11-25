@@ -18,7 +18,7 @@ from app.models.account import Account
 PASSWORD = "correct horse battery staple"
 
 
-# ---- Chapter 03: app, HTTP client and logged-in users ----
+# App, HTTP client, and logged-in users.
 # ``settings`` lives in tests/conftest.py so tests/concurrency can use it too.
 
 
@@ -41,7 +41,7 @@ async def client(app):
 
 @pytest_asyncio.fixture
 async def make_user(session_factory, client):
-    from app.core.security import hash_password  # implemented in chapter 02
+    from app.core.security import hash_password
 
     async def _make(role: Role = Role.ATTENDEE, *, disabled: bool = False):
         email = f"{uuid.uuid4().hex[:10]}@example.com"
@@ -67,7 +67,7 @@ def idem() -> dict[str, str]:
     return {"Idempotency-Key": str(uuid.uuid4())}
 
 
-# ---- Chapter 06: a valid session body and a published session ----
+# A valid session body and a published session.
 
 
 def session_body(*, capacity=2, opens=-1, closes=1, starts=2, ends=3) -> dict:

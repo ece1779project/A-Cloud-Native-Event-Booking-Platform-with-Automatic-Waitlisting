@@ -2,13 +2,11 @@
 
 Version: 1.2 | Date: 2026-11-14 | Scope: First complete release of the course project
 
-This document is based on Sections 1, 2, and 4 of [Project_Proposal.md](Project_Proposal.md) and the [system architecture diagram](planned-system-architecture.svg). It does not adopt the schedule, team assignments, or integration plan in Section 3. The proposal establishes the product direction and technical constraints; this document adds business rules, default parameters, and acceptance criteria. The repository currently contains the planning documents and a local Docker Compose scaffold with a health endpoint. The requirements below remain to be implemented and verified; they do not represent existing functionality or measured results.
+This document states the business rules, default parameters, and acceptance criteria. Product direction is in [Project_Proposal.md](Project_Proposal.md). The architecture sketch is [planned-system-architecture.svg](planned-system-architecture.svg).
 
 **Reading conventions.** Every numbered rule is mandatory unless it says "optional." "May" grants a permission to a user or implementer; it never marks a rule the system is free to skip. Tests and reviews cite rules by number, for example FR-04.3.
 
-**Differences from the proposal.** This document replaces the transactional outbox and Redis Streams pipeline from Section 3.3 of the proposal with database scanning (NFR-01), and uses the DOKS-managed Gateway API where the architecture diagram shows an ingress. The final report must state both changes.
-
-**Changes in 1.2.** Rules are numbered individually. Deployment and observability requirements are renumbered NFR-01 and NFR-02, security becomes NFR-03, and the frontend pages become FR-11. Registration writes now continue during a Redis outage. Connected clients reconcile state every 60 seconds, and sessions carry a version for discarding stale updates. Section 3 gains a terminology table, and Section 8 gains a parameter table and three open engineering items.
+Expiration and promotion are done by scanning PostgreSQL. Public routing uses the DOKS-managed Gateway API. PostgreSQL remains the authority for seats.
 
 ## 1. Product Positioning and Problem
 
@@ -340,7 +338,7 @@ The acceptance scenarios following each FR define the minimum scope of its tests
 
 For the demonstration, use a session with capacity 2: two attendees obtain holds, and a third and fourth join the waitlist. The first confirms, the second cancels the hold, and the third receives an offer and confirms. Then cancel a confirmed booking; the fourth receives an offer but does not confirm in time, and the system automatically reclaims the seat. Show waitlist positions, capacity statistics, and real-time updates throughout, and verify after a worker restart that original deadlines remain valid. Shorter validity periods may be configured to shorten the demonstration, provided the report documents that configuration and separately verifies the production defaults of 5 and 10 minutes.
 
-## 8. Default Decisions and Outstanding Items
+## 8. Default Decisions
 
 This document adopts one seat per person per session, 5-minute holds, 10-minute waitlist offers, strict FIFO, offers that occupy seats, immediate confirmation after simulated payment success, and confirmation windows that never extend beyond the registration deadline. These additional product decisions keep implementation simple and behavior consistent and may be used directly as development requirements. Validity periods and rate-limit thresholds are managed through environment configuration, without adding complex organizer settings pages. Parameter changes apply only to new records and do not retroactively alter persisted deadlines.
 
@@ -359,14 +357,8 @@ This document adopts one seat per person per session, 5-minute holds, 10-minute 
 | Overdue-task alert | Oldest task more than 30 seconds overdue for 1 minute | NFR-02 |
 | Error-rate alert | Unexpected 5xx above 5% in a 5-minute window | NFR-02 |
 
-Version 1.2 listed three open engineering items. The [technical design document](TECHNICAL_DESIGN.md) has since resolved two of them. The third is still open and needs a decision by the team before implementation starts.
+The API contract, message contract, and authentication scheme are specified in the [technical design](TECHNICAL_DESIGN.md). Redis inventory pre-deduction is not part of this release.
 
-| Item | Status | Where it is decided |
-| --- | --- | --- |
-| API and message contract | Resolved | Technical design, Section 8 for REST routes, schemas and the error-code table; Section 10 for WebSocket messages, Redis names and the publication matrix. |
-| Authentication scheme | Resolved | Technical design, Section 9 for token type and lifetime, immediate loss of access for a disabled account, and the WebSocket handshake; database design, Section 2.5 for the stored refresh tokens. |
-| Role assignment | Open | Which team member acts as project lead, test executor, deployment maintainer, and each implementer named in Section 6. Also listed in technical design, Section 18. |
+Cloud budget, node size, domain, and TLS are chosen at deployment time. See `deploy/README.md`.
 
-No product questions currently block local development. Before launch, the project lead must establish the cloud budget, target deployment specifications, and actual acceptance date; the deployment maintainer must arrange the domain and TLS. These details cannot be inferred from the proposal. Whether to adopt Redis inventory pre-deduction will be decided after the backend implementer provides a comparison between the database baseline and the experimental approach; it is not a prerequisite for completing the first release.
-
-If future requirements involve real payments, purchasing paid cloud resources, changing waitlist fairness rules, or reducing capacity and persistence guarantees, the project lead must decide first and update this document. Implementers may independently determine ordinary page layouts, error wording, and implementation details that do not change business semantics.
+If a later change involves real payments, paid cloud resources beyond the course deployment, a different waitlist order, or weaker capacity and persistence guarantees, update this document first. Page layout, error wording, and implementation details that do not change these rules do not require a requirements change.
